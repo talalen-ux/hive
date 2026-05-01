@@ -29,16 +29,27 @@ export function useStakerData() {
       : [],
   });
 
-  const stakeTuple = data?.[2]?.result as readonly [bigint, bigint, bigint] | undefined;
+  // viem returns multi-output getters as a struct: { amount, lockEnd, lockDuration }.
+  // Solidity public mappings of structs flatten the struct into named outputs in the ABI,
+  // and viem decodes named outputs as objects. We accept either shape defensively.
+  const rawStake = data?.[2]?.result as
+    | { amount: bigint; lockEnd: bigint; lockDuration: bigint }
+    | readonly [bigint, bigint, bigint]
+    | undefined;
+  const stake = rawStake
+    ? Array.isArray(rawStake)
+      ? { amount: rawStake[0], lockEnd: rawStake[1], lockDuration: rawStake[2] }
+      : (rawStake as { amount: bigint; lockEnd: bigint; lockDuration: bigint })
+    : undefined;
 
   return {
     isLoading,
     refetch,
     balance: (data?.[0]?.result as bigint | undefined) ?? 0n,
     allowance: (data?.[1]?.result as bigint | undefined) ?? 0n,
-    staked: stakeTuple?.[0] ?? 0n,
-    lockEnd: Number(stakeTuple?.[1] ?? 0n),
-    lockDuration: Number(stakeTuple?.[2] ?? 0n),
+    staked: stake?.amount ?? 0n,
+    lockEnd: Number(stake?.lockEnd ?? 0n),
+    lockDuration: Number(stake?.lockDuration ?? 0n),
     totalStaked: (data?.[3]?.result as bigint | undefined) ?? 0n,
     totalWeighted: (data?.[4]?.result as bigint | undefined) ?? 0n,
     pendingHive: (data?.[5]?.result as bigint | undefined) ?? 0n,
