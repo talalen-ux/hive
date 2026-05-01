@@ -1,0 +1,57 @@
+specVersion: 0.0.5
+schema:
+  file: ./schema.graphql
+dataSources:
+  - kind: ethereum/contract
+    name: HiveStaking
+    network: mainnet
+    source:
+      address: "0x0000000000000000000000000000000000000000"
+      abi: HiveStaking
+      startBlock: 0
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      file: ./mappings.ts
+      entities:
+        - Staker
+        - StakeEvent
+        - UnstakeEvent
+        - ClaimEvent
+        - Stats
+      abis:
+        - name: HiveStaking
+          file: ./abis/HiveStaking.json
+      eventHandlers:
+        - event: Staked(indexed address,uint256,uint256,uint256)
+          handler: handleStaked
+        - event: Unstaked(indexed address,uint256,bool)
+          handler: handleUnstaked
+  - kind: ethereum/contract
+    name: HiveRewards
+    network: mainnet
+    source:
+      address: "0x0000000000000000000000000000000000000000"
+      abi: HiveRewards
+      startBlock: 0
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      file: ./mappings.ts
+      entities:
+        - Staker
+        - ClaimEvent
+        - RewardEpoch
+        - Stats
+      abis:
+        - name: HiveRewards
+          file: ./abis/HiveRewards.json
+      eventHandlers:
+        - event: RewardAdded(uint256,uint256)
+          handler: handleRewardAdded
+        - event: Claimed(indexed address,indexed address,uint256,uint256)
+          handler: handleClaimed
+        - event: Forfeited(indexed address,uint256,uint256)
+          handler: handleForfeited

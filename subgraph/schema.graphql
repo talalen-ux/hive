@@ -1,0 +1,68 @@
+type Staker @entity {
+  "Wallet address (lowercase hex)"
+  id: ID!
+  amount: BigInt!
+  weight: BigInt!
+  lockEnd: BigInt!
+  lockDuration: BigInt!
+  multiplier: Int!
+  totalHiveClaimed: BigInt!
+  totalEthClaimed: BigInt!
+  totalForfeitedHive: BigInt!
+  totalForfeitedEth: BigInt!
+  stakes: [StakeEvent!]! @derivedFrom(field: "staker")
+  unstakes: [UnstakeEvent!]! @derivedFrom(field: "staker")
+  claims: [ClaimEvent!]! @derivedFrom(field: "staker")
+}
+
+type StakeEvent @entity(immutable: true) {
+  id: ID!
+  staker: Staker!
+  amount: BigInt!
+  lockDuration: BigInt!
+  lockEnd: BigInt!
+  blockNumber: BigInt!
+  timestamp: BigInt!
+  txHash: Bytes!
+}
+
+type UnstakeEvent @entity(immutable: true) {
+  id: ID!
+  staker: Staker!
+  amount: BigInt!
+  earnedRewards: Boolean!
+  blockNumber: BigInt!
+  timestamp: BigInt!
+  txHash: Bytes!
+}
+
+type ClaimEvent @entity(immutable: true) {
+  id: ID!
+  staker: Staker!
+  to: Bytes!
+  hiveAmount: BigInt!
+  ethAmount: BigInt!
+  blockNumber: BigInt!
+  timestamp: BigInt!
+  txHash: Bytes!
+}
+
+type RewardEpoch @entity(immutable: true) {
+  "Block number of the reward sync"
+  id: ID!
+  hiveAdded: BigInt!
+  ethAdded: BigInt!
+  totalWeighted: BigInt!
+  blockNumber: BigInt!
+  timestamp: BigInt!
+}
+
+type Stats @entity {
+  "Singleton with id 'global'"
+  id: ID!
+  totalStaked: BigInt!
+  totalWeighted: BigInt!
+  totalHiveDistributed: BigInt!
+  totalEthDistributed: BigInt!
+  uniqueStakers: Int!
+}
