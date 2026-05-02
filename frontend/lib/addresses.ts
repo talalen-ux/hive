@@ -3,18 +3,20 @@ import { type Address, isAddress } from "viem";
 /**
  * Per-chain deployment addresses sourced from public env vars at build time.
  *
- * Until each address is set the dapp runs in "preview" mode: read calls are
- * skipped, write actions are disabled, and a banner explains the contracts
- * have not been deployed on this chain yet.
+ * Until the four core contracts (token/staking/rewards/vault) are set, the
+ * dapp runs in "preview" mode — read calls are skipped, write actions are
+ * disabled, and a banner explains the contracts have not been deployed on
+ * this chain yet.
  *
- * To go live on a chain, set the four NEXT_PUBLIC_*_<NETWORK> env vars in
- * the Vercel project (or .env.local for local dev) and redeploy.
+ * The governor is optional: when its address is set, the incubator pages
+ * fetch proposals + tasks on-chain instead of using mock seed data.
  */
 export type HiveAddresses = {
   hive: Address;
   staking: Address;
   rewards: Address;
   vault: Address;
+  governor: Address;
 };
 
 const ZERO = "0x0000000000000000000000000000000000000000" as Address;
@@ -32,6 +34,7 @@ export const ADDRESSES: Record<number, HiveAddresses> = {
     staking: readAddress("NEXT_PUBLIC_STAKING_MAINNET"),
     rewards: readAddress("NEXT_PUBLIC_REWARDS_MAINNET"),
     vault: readAddress("NEXT_PUBLIC_VAULT_MAINNET"),
+    governor: readAddress("NEXT_PUBLIC_GOVERNOR_MAINNET"),
   },
   // sepolia testnet
   11155111: {
@@ -39,6 +42,7 @@ export const ADDRESSES: Record<number, HiveAddresses> = {
     staking: readAddress("NEXT_PUBLIC_STAKING_SEPOLIA"),
     rewards: readAddress("NEXT_PUBLIC_REWARDS_SEPOLIA"),
     vault: readAddress("NEXT_PUBLIC_VAULT_SEPOLIA"),
+    governor: readAddress("NEXT_PUBLIC_GOVERNOR_SEPOLIA"),
   },
 };
 
@@ -46,7 +50,7 @@ export function getAddresses(chainId: number | undefined): HiveAddresses {
   return (chainId !== undefined && ADDRESSES[chainId]) || ADDRESSES[1];
 }
 
-/** True iff every contract has a non-zero address on this chain. */
+/** True iff the four core contracts have non-zero addresses on this chain. */
 export function isLiveOn(chainId: number | undefined): boolean {
   const a = getAddresses(chainId);
   return (
@@ -55,6 +59,11 @@ export function isLiveOn(chainId: number | undefined): boolean {
     a.rewards !== ZERO &&
     a.vault !== ZERO
   );
+}
+
+/** True iff the governor is wired on this chain. */
+export function hasGovernor(chainId: number | undefined): boolean {
+  return getAddresses(chainId).governor !== ZERO;
 }
 
 export const SUPPORTED_CHAIN_IDS = Object.keys(ADDRESSES).map((s) => Number(s));

@@ -1,12 +1,20 @@
+import { useState } from "react";
 import { motion } from "framer-motion";
-import { fmtNum, voteOnTask, type Task } from "@/lib/incubator";
-import { useIncubator } from "@/hooks/useIncubator";
+import { fmtNum, type Task } from "@/lib/incubator";
+import { useIncubator, useIncubatorActions } from "@/hooks/useIncubator";
 import { Countdown } from "./Countdown";
 
 export function TaskVote({ task }: { task: Task }) {
   const state = useIncubator();
+  const actions = useIncubatorActions();
+  const [busy, setBusy] = useState<string | null>(null);
   const myChoice = state.myVotes[`task:${task.id}`];
   const total = task.options.reduce((s, o) => s + o.votes, 0);
+
+  async function cast(optionId: string) {
+    setBusy(optionId);
+    try { await actions.voteOnTask(task.id, optionId); } finally { setBusy(null); }
+  }
 
   return (
     <div className="glass-panel rounded-2xl p-6">
@@ -41,8 +49,8 @@ export function TaskVote({ task }: { task: Task }) {
               key={opt.id}
               whileHover={{ y: -1 }}
               whileTap={{ scale: 0.99 }}
-              disabled={!!myChoice}
-              onClick={() => voteOnTask(task.id, opt.id)}
+              disabled={!!myChoice || !!busy}
+              onClick={() => cast(opt.id)}
               className={`relative w-full overflow-hidden rounded-xl border px-5 py-4 text-left transition-all ${
                 active
                   ? "border-honey/55 bg-honey/[0.06] shadow-honey"

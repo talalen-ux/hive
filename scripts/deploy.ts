@@ -20,6 +20,8 @@ import { ethers } from "hardhat";
  *   - TREASURY env var = 24h-timelocked multisig you control
  *   - INITIAL_SUPPLY (default 100M HIVE)
  *   - DEAD_SEED HIVE units (default 1000)
+ *   - ORACLE (default deployer) — EOA authorised to create governor
+ *     proposals/tasks; the AI generator backend will rotate into this role.
  *
  * After this script:
  *   - Seed Uniswap V2 liquidity (scripts/seedLiquidity.ts)
@@ -33,9 +35,11 @@ async function main() {
   const treasury = process.env.TREASURY ?? deployer.address;
   const initialSupply = ethers.parseUnits(process.env.INITIAL_SUPPLY ?? "100000000", 18);
   const deadSeed = ethers.parseUnits(process.env.DEAD_SEED ?? "1000", 18);
+  const oracle = process.env.ORACLE ?? deployer.address;
 
   console.log("Deployer:", deployer.address);
   console.log("Treasury:", treasury);
+  console.log("Oracle:  ", oracle);
   console.log("Initial supply:", ethers.formatUnits(initialSupply, 18), "HIVE");
   console.log("Dead seed:    ", ethers.formatUnits(deadSeed, 18), "HIVE");
 
@@ -80,6 +84,12 @@ async function main() {
   await (await hive.approve(stakingAddr, deadSeed)).wait();
   await (await staking.seedDeadWeight(deadSeed)).wait();
 
+  const HiveGovernor = await ethers.getContractFactory("HiveGovernor");
+  const governor = await HiveGovernor.deploy(deployer.address, stakingAddr, oracle);
+  await governor.waitForDeployment();
+  const governorAddr = await governor.getAddress();
+  console.log("HiveGovernor:", governorAddr);
+
   console.log("\n✅ Hive stack deployed and wired.");
   console.log("Next steps:");
   console.log("  1. scripts/seedLiquidity.ts — fund the Uniswap V2 pool");
@@ -94,6 +104,7 @@ async function main() {
   console.log(`  NEXT_PUBLIC_STAKING_${suffix}=${stakingAddr}`);
   console.log(`  NEXT_PUBLIC_REWARDS_${suffix}=${rewardsAddr}`);
   console.log(`  NEXT_PUBLIC_VAULT_${suffix}=${vaultAddr}`);
+  console.log(`  NEXT_PUBLIC_GOVERNOR_${suffix}=${governorAddr}`);
 }
 
 main().catch((err) => {

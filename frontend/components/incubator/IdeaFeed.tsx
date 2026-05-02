@@ -1,11 +1,11 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useMemo } from "react";
 import { IdeaCard } from "./IdeaCard";
-import { useIncubator } from "@/hooks/useIncubator";
-import { approveIdea, rejectIdea } from "@/lib/incubator";
+import { useIncubator, useIncubatorActions } from "@/hooks/useIncubator";
 
 export function IdeaFeed() {
   const state = useIncubator();
+  const actions = useIncubatorActions();
   const queue = useMemo(
     () => state.ideas.filter((i) => i.status === "PENDING"),
     [state.ideas],
@@ -49,8 +49,8 @@ export function IdeaFeed() {
             >
               <IdeaCard
                 idea={idea}
-                onApprove={() => approveIdea(idea.id)}
-                onReject={() => rejectIdea(idea.id)}
+                onApprove={() => actions.approveIdea(idea.id)}
+                onReject={() => actions.rejectIdea(idea.id)}
                 z={top}
               />
             </motion.div>

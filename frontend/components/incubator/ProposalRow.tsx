@@ -1,14 +1,14 @@
+import { useState } from "react";
 import { motion } from "framer-motion";
 import {
   fmtNum,
   passing,
   quorumMet,
   totalVotes,
-  voteOnProposal,
   type Idea,
   type Proposal,
 } from "@/lib/incubator";
-import { useIncubator } from "@/hooks/useIncubator";
+import { useIncubator, useIncubatorActions } from "@/hooks/useIncubator";
 import { Countdown } from "./Countdown";
 
 export function ProposalRow({
@@ -19,7 +19,14 @@ export function ProposalRow({
   idea: Idea;
 }) {
   const state = useIncubator();
+  const actions = useIncubatorActions();
+  const [busy, setBusy] = useState<string | null>(null);
   const myChoice = state.myVotes[`proposal:${proposal.id}`];
+
+  async function cast(choice: "yes" | "no" | "abstain") {
+    setBusy(choice);
+    try { await actions.voteOnProposal(proposal.id, choice); } finally { setBusy(null); }
+  }
 
   const total = totalVotes(proposal);
   const yesPct = total > 0 ? proposal.yes / total : 0;
@@ -110,8 +117,8 @@ export function ProposalRow({
               key={c}
               whileHover={{ y: -1 }}
               whileTap={{ scale: 0.97 }}
-              disabled={!!myChoice}
-              onClick={() => voteOnProposal(proposal.id, c)}
+              disabled={!!myChoice || !!busy}
+              onClick={() => cast(c)}
               className={`flex-1 rounded-full px-4 py-2 text-[11px] uppercase tracking-wider2 transition-all ${
                 active
                   ? "bg-gradient-to-br from-honey-soft to-honey text-ink shadow-honey"
@@ -120,7 +127,7 @@ export function ProposalRow({
                   : "border border-honey/20 text-honey-soft/75 hover:border-honey/45 hover:text-honey-soft"
               }`}
             >
-              {c}
+              {busy === c ? "…" : c}
             </motion.button>
           );
         })}
