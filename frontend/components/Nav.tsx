@@ -6,6 +6,8 @@ import { ConnectButton } from "./ConnectButton";
 const ITEMS = [
   { href: "/", label: "Hive" },
   { href: "/stake", label: "Enter" },
+  { href: "/incubator", label: "Build" },
+  { href: "/projects", label: "Projects" },
   { href: "/rewards", label: "Nectar" },
   { href: "/leaderboard", label: "Queens" },
   { href: "/map", label: "Map" },
@@ -24,7 +26,9 @@ export function Nav() {
 
       <nav className="hidden md:flex items-center gap-1">
         {ITEMS.map((it) => {
-          const active = pathname === it.href;
+          const active =
+            pathname === it.href ||
+            (it.href !== "/" && pathname.startsWith(it.href + "/"));
           return (
             <Link
               key={it.href}
