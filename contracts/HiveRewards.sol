@@ -248,12 +248,18 @@ contract HiveRewards is Ownable2Step, ReentrancyGuard, Pausable {
         u.pendingEth = 0;
 
         if (hiveAmt > 0) {
-            _accountedHive -= hiveAmt;
+            // Safe by invariant: pendingHive was credited from acc bumps that
+            // grew _accountedHive by at least the same amount.
+            unchecked { _accountedHive -= hiveAmt; }
             hive.safeTransfer(to, hiveAmt);
         }
         if (ethAmt > 0) {
-            _accountedEth -= ethAmt;
-            (bool ok, ) = to.call{value: ethAmt, gas: 50_000}("");
+            unchecked { _accountedEth -= ethAmt; }
+            // Bump the gas budget to 100k so contract wallets with non-trivial
+            // receive() hooks (Safe modules, multisigs that emit logs) succeed
+            // on first try. The deferral fallback below still catches edge
+            // cases — but giving recipients a real budget avoids the spam.
+            (bool ok, ) = to.call{value: ethAmt, gas: 100_000}("");
             if (!ok) {
                 // Roll back ETH bookkeeping: park the amount as pending and
                 // emit so the caller can retry to a different recipient.

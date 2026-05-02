@@ -23,9 +23,21 @@ export function ProposalRow({
   const [busy, setBusy] = useState<string | null>(null);
   const myChoice = state.myVotes[`proposal:${proposal.id}`];
 
+  const [error, setError] = useState<string | null>(null);
+
   async function cast(choice: "yes" | "no" | "abstain") {
     setBusy(choice);
-    try { await actions.voteOnProposal(proposal.id, choice); } finally { setBusy(null); }
+    setError(null);
+    try {
+      await actions.voteOnProposal(proposal.id, choice);
+    } catch (e) {
+      // surface tx rejections / on-chain reverts inline rather than throwing
+      // an unhandled rejection out of the click handler
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg.length > 120 ? msg.slice(0, 120) + "…" : msg);
+    } finally {
+      setBusy(null);
+    }
   }
 
   const total = totalVotes(proposal);
@@ -133,9 +145,14 @@ export function ProposalRow({
         })}
       </div>
 
-      {myChoice && (
+      {myChoice && !error && (
         <div className="mt-3 text-center text-[10px] uppercase tracking-wider2 text-honey-soft/50">
           {passing(proposal) ? "Currently passing" : "Currently below threshold"}
+        </div>
+      )}
+      {error && (
+        <div className="mt-3 rounded-lg border border-red-400/30 bg-red-400/[0.04] px-3 py-2 text-[11px] text-red-300/80">
+          {error}
         </div>
       )}
     </motion.div>

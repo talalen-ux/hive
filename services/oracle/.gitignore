@@ -1,5 +1,16 @@
 node_modules/
 dist/
+coverage/
+tmp/
+
+# secrets
 .env
-.env.local
+.env.*
+!.env.example
+.envrc
+*.pem
+*.key
+keystore
+keystore-*
+.DS_Store
 *.log

@@ -20,13 +20,23 @@ function intIn(key: string, fallback: number, min: number, max: number): number 
   return n;
 }
 
+function privateKey(key: string): string {
+  const v = required(key);
+  if (!/^0x[0-9a-fA-F]{64}$/.test(v)) {
+    throw new Error(`${key} must be a 0x-prefixed 32-byte hex string`);
+  }
+  return v;
+}
+
 export const env = {
   anthropicApiKey: required("ANTHROPIC_API_KEY"),
   rpcUrl: required("RPC_URL"),
   chainId: intIn("CHAIN_ID", 1, 1, 2147483647),
   governor: required("GOVERNOR_ADDRESS"),
-  privateKey: required("ORACLE_PRIVATE_KEY"),
+  privateKey: privateKey("ORACLE_PRIVATE_KEY"),
   ideasPerRun: intIn("IDEAS_PER_RUN", 5, 1, 8),
-  votingWindowHours: intIn("VOTING_WINDOW_HOURS", 48, 24, 168),
+  // Minimum 25h: gives a 1h safety margin above the contract's 24h floor so
+  // simulate→write timing slop never lands a tx outside the window.
+  votingWindowHours: intIn("VOTING_WINDOW_HOURS", 48, 25, 168),
   dryRun: (process.env.DRY_RUN ?? "false").toLowerCase() === "true",
 } as const;

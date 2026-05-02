@@ -129,9 +129,10 @@ exits cleanly after each run; just call it from cron / systemd-timer.
 ## Key management
 
 The oracle key has exactly one privilege: calling
-`HiveGovernor.createProposal()` and `createTask()`. It cannot move user
-funds, change reward distribution, or bypass any vote. The blast radius
-is "spammy proposals" — bad but reversible.
+`HiveGovernor.createProposal()` (and, in a future revision, `createTask()`
+— not yet wired by this service). It cannot move user funds, change
+reward distribution, or bypass any vote. The blast radius is "spammy
+proposals" — bad but reversible.
 
 Recommendations from cheapest to safest:
 
@@ -163,7 +164,10 @@ Use `DRY_RUN=true` while iterating on the prompt to avoid both costs.
 |---|---|---|
 | `wired private key does not match governor.oracle()` | wrong key | rotate `ORACLE_PRIVATE_KEY` to the EOA you set on deploy |
 | `claude returned unparseable output (stop_reason=…)` | safety refusal or token cap | inspect the prompt; raise `max_tokens` if the response was clipped |
-| `transaction reverted with reason: not oracle` | governor was rotated to a new address | update `ORACLE_PRIVATE_KEY` |
+| `transaction reverted with reason: NotOracle` | governor was rotated to a new address | update `ORACLE_PRIVATE_KEY`. If the governor is in a 2-step rotation cooldown, wait for `acceptOracleRotation` |
+| `WindowTooShort` / `WindowEndsInPast` | `VOTING_WINDOW_HOURS=24` + clock drift | use 25 or higher (the oracle enforces this; if you see it, the env was bypassed) |
+| `ThresholdRequired` | governor was upgraded; oracle is sending threshold=0 | update the oracle: `snapshotThreshold` already returns ≥1 |
+| `dedup degraded: N/M title reads failed` | RPC unhealthy across more than half of the recent-title reads | retry; switch RPC; abort + investigate before posting |
 | `cache_read_input_tokens: 0` on every run | the system prompt is being mutated per-call | check that `prompt.ts` is a frozen string with no interpolation |
 
 ## Slice 3 boundary

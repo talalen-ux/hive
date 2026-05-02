@@ -8,7 +8,8 @@ import { useStakerData } from "@/hooks/useHiveStake";
 export default function Dashboard() {
   const data = useStakerData();
   const tvl = num(data.totalStaked);
-  const weighted = num(data.totalWeighted);
+  // Use effectiveWeighted to hide the burn-floor (DEAD seed).
+  const weighted = num(data.effectiveWeighted);
   // intensity ~= log10(TVL) / 7 for a non-linear, slow-saturating glow
   const intensity =
     tvl > 0 ? Math.min(1, 0.35 + Math.log10(tvl + 10) / 7) : 0.4;

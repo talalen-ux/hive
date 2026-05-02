@@ -127,7 +127,11 @@ contract HiveToken is ERC20, ERC20Permit, Ownable2Step {
     /// @notice Tax only applies to swaps with registered Uniswap-like pairs.
     function setTaxedPair(address pair, bool taxed) external onlyOwner {
         // Protocol-critical addresses are NEVER taxed pairs — defence in depth.
+        // address(0) is also rejected on the taxed=true path because the tax
+        // hook short-circuits when from/to == 0, making such an entry dead
+        // bookkeeping that just clutters indexers.
         if (taxed) {
+            require(pair != address(0), "pair=0");
             require(
                 pair != rewardsPool &&
                 pair != staking &&

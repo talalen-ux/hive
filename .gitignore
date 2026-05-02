@@ -17,3 +17,4 @@ frontend/node_modules/
 subgraph/build/
 subgraph/generated/
 subgraph/node_modules/
+frontend/tsconfig.tsbuildinfo

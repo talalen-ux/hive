@@ -10,10 +10,19 @@ export function TaskVote({ task }: { task: Task }) {
   const [busy, setBusy] = useState<string | null>(null);
   const myChoice = state.myVotes[`task:${task.id}`];
   const total = task.options.reduce((s, o) => s + o.votes, 0);
+  const [error, setError] = useState<string | null>(null);
 
   async function cast(optionId: string) {
     setBusy(optionId);
-    try { await actions.voteOnTask(task.id, optionId); } finally { setBusy(null); }
+    setError(null);
+    try {
+      await actions.voteOnTask(task.id, optionId);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg.length > 120 ? msg.slice(0, 120) + "…" : msg);
+    } finally {
+      setBusy(null);
+    }
   }
 
   return (
@@ -107,9 +116,14 @@ export function TaskVote({ task }: { task: Task }) {
         })}
       </div>
 
-      {myChoice && (
+      {myChoice && !error && (
         <div className="mt-3 text-center text-[10px] uppercase tracking-wider2 text-honey-soft/50">
           You voted · option {myChoice}
+        </div>
+      )}
+      {error && (
+        <div className="mt-3 rounded-lg border border-red-400/30 bg-red-400/[0.04] px-3 py-2 text-[11px] text-red-300/80">
+          {error}
         </div>
       )}
     </div>

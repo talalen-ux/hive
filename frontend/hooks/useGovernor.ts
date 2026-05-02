@@ -1,6 +1,5 @@
 import { useMemo } from "react";
-import { useAccount, useChainId, useReadContract, useReadContracts, useWriteContract } from "wagmi";
-import { type Address } from "viem";
+import { useAccount, useChainId, useReadContracts, useWriteContract } from "wagmi";
 import { GOVERNOR_ABI } from "@/lib/abis";
 import { getAddresses, hasGovernor } from "@/lib/addresses";
 import type {
@@ -12,6 +11,11 @@ import type {
   TaskOption,
 } from "@/lib/incubator";
 import { STAGE_ORDER } from "@/lib/incubator";
+
+/** Per-render fan-out cap. Keeps the eth_call payload bounded as the governor
+ *  scales. Beyond this, paginate or upgrade to a subgraph in slice 3.5. */
+const MAX_PROPOSAL_READS = 50;
+const MAX_TASK_READS = 50;
 
 /**
  * Reads on-chain proposals + tasks from HiveGovernor and adapts them into the
@@ -36,32 +40,41 @@ export function useGovernorIncubator() {
       : [],
   });
 
-  const proposalCount = Number((counts.data?.[0]?.result as bigint | undefined) ?? 0n);
-  const taskCount = Number((counts.data?.[1]?.result as bigint | undefined) ?? 0n);
-
-  const proposalIds = useMemo(
-    () => Array.from({ length: proposalCount }, (_, i) => BigInt(i + 1)),
-    [proposalCount],
+  const proposalCount = Math.min(
+    Number((counts.data?.[0]?.result as bigint | undefined) ?? 0n),
+    MAX_PROPOSAL_READS,
   );
-  const taskIds = useMemo(
-    () => Array.from({ length: taskCount }, (_, i) => BigInt(i + 1)),
-    [taskCount],
+  const taskCount = Math.min(
+    Number((counts.data?.[1]?.result as bigint | undefined) ?? 0n),
+    MAX_TASK_READS,
   );
 
-  // batched reads — for each proposal pull (struct, myVote)
+  // proposal struct fan-out — always issued when count > 0.
   const proposalReads = useReadContracts({
     allowFailure: true,
     query: { enabled: enabled && proposalCount > 0, refetchInterval: 12_000 },
     contracts: enabled
-      ? proposalIds.flatMap((id) => [
-          { address: governor, abi: GOVERNOR_ABI, functionName: "proposals", args: [id] } as const,
-          {
-            address: governor,
-            abi: GOVERNOR_ABI,
-            functionName: "proposalVotes",
-            args: [id, (user ?? "0x0000000000000000000000000000000000000000") as Address],
-          } as const,
-        ])
+      ? Array.from({ length: proposalCount }, (_, i) => ({
+          address: governor,
+          abi: GOVERNOR_ABI,
+          functionName: "proposals",
+          args: [BigInt(i + 1)],
+        }) as const)
+      : [],
+  });
+
+  // user-vote fan-out — only issued when a wallet is connected. Without this
+  // we'd burn one extra eth_call per proposal every 12s for non-voters.
+  const proposalMyVoteReads = useReadContracts({
+    allowFailure: true,
+    query: { enabled: enabled && proposalCount > 0 && !!user, refetchInterval: 12_000 },
+    contracts: enabled && user
+      ? Array.from({ length: proposalCount }, (_, i) => ({
+          address: governor,
+          abi: GOVERNOR_ABI,
+          functionName: "proposalVotes",
+          args: [BigInt(i + 1), user],
+        }) as const)
       : [],
   });
 
@@ -69,16 +82,23 @@ export function useGovernorIncubator() {
     allowFailure: true,
     query: { enabled: enabled && taskCount > 0, refetchInterval: 12_000 },
     contracts: enabled
-      ? taskIds.flatMap((id) => [
-          { address: governor, abi: GOVERNOR_ABI, functionName: "tasks", args: [id] } as const,
-          { address: governor, abi: GOVERNOR_ABI, functionName: "taskOptions", args: [id] } as const,
-          {
-            address: governor,
-            abi: GOVERNOR_ABI,
-            functionName: "taskVotes",
-            args: [id, (user ?? "0x0000000000000000000000000000000000000000") as Address],
-          } as const,
-        ])
+      ? Array.from({ length: taskCount }, (_, i) => [
+          { address: governor, abi: GOVERNOR_ABI, functionName: "tasks", args: [BigInt(i + 1)] } as const,
+          { address: governor, abi: GOVERNOR_ABI, functionName: "taskOptions", args: [BigInt(i + 1)] } as const,
+        ]).flat()
+      : [],
+  });
+
+  const taskMyVoteReads = useReadContracts({
+    allowFailure: true,
+    query: { enabled: enabled && taskCount > 0 && !!user, refetchInterval: 12_000 },
+    contracts: enabled && user
+      ? Array.from({ length: taskCount }, (_, i) => ({
+          address: governor,
+          abi: GOVERNOR_ABI,
+          functionName: "taskVotes",
+          args: [BigInt(i + 1), user],
+        }) as const)
       : [],
   });
 
@@ -89,12 +109,11 @@ export function useGovernorIncubator() {
     if (!enabled || !proposalReads.data) return { ideas, proposals, myVotes };
 
     for (let i = 0; i < proposalCount; i++) {
-      const propRaw = proposalReads.data[i * 2]?.result;
-      const myRaw = proposalReads.data[i * 2 + 1]?.result;
+      const propRaw = proposalReads.data[i]?.result;
       if (!propRaw) continue;
       const id = String(i + 1);
       const p = decodeProposal(propRaw);
-      const ideaId = `idea-${id}`;
+      const ideaId = `idea-onchain-${id}`;
       const proposalId = `prop-${id}`;
       ideas.push({
         id: ideaId,
@@ -120,11 +139,11 @@ export function useGovernorIncubator() {
         threshold: Number(p.threshold / SCALE),
         status: proposalStatusFor(p.status),
       });
-      const myChoice = decodeChoice(myRaw);
+      const myChoice = decodeChoice(proposalMyVoteReads.data?.[i]?.result);
       if (myChoice) myVotes[`proposal:${proposalId}`] = myChoice;
     }
     return { ideas, proposals, myVotes };
-  }, [enabled, proposalCount, proposalReads.data]);
+  }, [enabled, proposalCount, proposalReads.data, proposalMyVoteReads.data]);
 
   const { tasks, taskMyVotes } = useMemo(() => {
     const tasks: Task[] = [];
@@ -132,14 +151,13 @@ export function useGovernorIncubator() {
     if (!enabled || !taskReads.data) return { tasks, taskMyVotes };
 
     for (let i = 0; i < taskCount; i++) {
-      const taskRaw = taskReads.data[i * 3]?.result;
-      const optsRaw = taskReads.data[i * 3 + 1]?.result;
-      const myRaw = taskReads.data[i * 3 + 2]?.result;
+      const taskRaw = taskReads.data[i * 2]?.result;
+      const optsRaw = taskReads.data[i * 2 + 1]?.result;
       if (!taskRaw || !optsRaw) continue;
       const id = i + 1;
       const t = decodeTask(taskRaw);
       const opts = (optsRaw as readonly OnchainOption[]).map((o, idx) => ({
-        id: String.fromCharCode(65 + idx), // 1 → "A", 2 → "B"
+        id: String.fromCharCode(65 + idx),
         label: o.label,
         description: o.description,
         votes: Number(o.votes / SCALE),
@@ -147,7 +165,7 @@ export function useGovernorIncubator() {
       const taskId = `task-${id}`;
       tasks.push({
         id: taskId,
-        projectId: t.projectKey, // FE side maps key → seeded project
+        projectId: t.projectKey,
         stage: stageFromIndex(t.stage),
         description: t.description,
         options: opts,
@@ -155,11 +173,11 @@ export function useGovernorIncubator() {
         votingEnd: Number(t.votingEnd) * 1000,
         decidedOption: t.decidedOption ? String.fromCharCode(64 + t.decidedOption) : undefined,
       });
-      const myOption = Number(myRaw ?? 0n);
+      const myOption = Number(taskMyVoteReads.data?.[i]?.result ?? 0n);
       if (myOption >= 1) taskMyVotes[`task:${taskId}`] = String.fromCharCode(64 + myOption);
     }
     return { tasks, taskMyVotes };
-  }, [enabled, taskCount, taskReads.data]);
+  }, [enabled, taskCount, taskReads.data, taskMyVoteReads.data]);
 
   const merged: Record<string, string> = useMemo(
     () => ({ ...myVotes, ...taskMyVotes }),
@@ -170,7 +188,11 @@ export function useGovernorIncubator() {
     enabled,
     isLoading: counts.isLoading || proposalReads.isLoading || taskReads.isLoading,
     refetch: async () => {
-      await Promise.all([counts.refetch(), proposalReads.refetch(), taskReads.refetch()]);
+      await Promise.all([
+        counts.refetch(),
+        proposalReads.refetch(),
+        taskReads.refetch(),
+      ]);
     },
     ideas,
     proposals,
@@ -219,6 +241,10 @@ export function useGovernorActions() {
 }
 
 // ─────────────── on-chain decoders ───────────────
+//
+// The ABI defines named struct outputs, which viem decodes into objects with
+// stable keys. We rely on that shape; the previous "defensive" array branch
+// was dead code with unsafe casts and has been removed.
 
 const SCALE = 10n ** 18n; // weight is 18-decimal HIVE units
 
@@ -227,8 +253,6 @@ type OnchainProposal = {
   description: string;
   category: string;
   buildTime: string;
-  complexity: number;
-  marketPotential: number;
   votingStart: bigint;
   votingEnd: bigint;
   yes: bigint;
@@ -236,17 +260,19 @@ type OnchainProposal = {
   abstain: bigint;
   threshold: bigint;
   participants: number;
+  complexity: number;
+  marketPotential: number;
   status: number;
 };
 
 type OnchainTask = {
   projectKey: `0x${string}`;
   description: string;
-  stage: number;
   votingStart: bigint;
   votingEnd: bigint;
   threshold: bigint;
   totalVotes: bigint;
+  stage: number;
   optionCount: number;
   status: number;
   decidedOption: number;
@@ -254,40 +280,7 @@ type OnchainTask = {
 
 type OnchainOption = { label: string; description: string; votes: bigint };
 
-function decodeProposal(raw: unknown): {
-  title: string;
-  description: string;
-  category: string;
-  buildTime: string;
-  complexity: number;
-  marketPotential: number;
-  votingStart: number;
-  votingEnd: number;
-  yes: bigint;
-  no: bigint;
-  abstain: bigint;
-  threshold: bigint;
-  participants: number;
-  status: number;
-} {
-  if (Array.isArray(raw)) {
-    const [
-      title, description, category, buildTime,
-      complexity, marketPotential, votingStart, votingEnd,
-      yes, no, abstain, threshold, participants, status,
-    ] = raw as [
-      string, string, string, string,
-      number, number, bigint, bigint,
-      bigint, bigint, bigint, bigint, number, number,
-    ];
-    return {
-      title, description, category, buildTime,
-      complexity, marketPotential,
-      votingStart: Number(votingStart), votingEnd: Number(votingEnd),
-      yes, no, abstain, threshold,
-      participants: Number(participants), status,
-    };
-  }
+function decodeProposal(raw: unknown) {
   const o = raw as OnchainProposal;
   return {
     title: o.title,
@@ -308,20 +301,6 @@ function decodeProposal(raw: unknown): {
 }
 
 function decodeTask(raw: unknown): OnchainTask {
-  if (Array.isArray(raw)) {
-    const [
-      projectKey, description, stage, votingStart, votingEnd,
-      threshold, totalVotes, optionCount, status, decidedOption,
-    ] = raw as [
-      `0x${string}`, string, number, bigint, bigint,
-      bigint, bigint, number, number, number,
-    ];
-    return {
-      projectKey, description, stage,
-      votingStart, votingEnd, threshold, totalVotes,
-      optionCount, status, decidedOption,
-    };
-  }
   return raw as OnchainTask;
 }
 

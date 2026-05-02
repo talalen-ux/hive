@@ -20,7 +20,9 @@ export const STAKING_ABI = [
   ] },
   { type: "function", name: "totalStaked", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { type: "function", name: "totalWeighted", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "effectiveWeighted", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { type: "function", name: "weightOf", stateMutability: "view", inputs: [{ name: "user", type: "address" }], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "voteFreezeUntil", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "uint64" }] },
   { type: "function", name: "pendingHive", stateMutability: "view", inputs: [{ name: "user", type: "address" }], outputs: [{ type: "uint256" }] },
   { type: "function", name: "pendingEth", stateMutability: "view", inputs: [{ name: "user", type: "address" }], outputs: [{ type: "uint256" }] },
   { type: "event", name: "Staked", inputs: [
@@ -48,6 +50,9 @@ export const VAULT_ABI = [
   { type: "function", name: "harvest", stateMutability: "nonpayable", inputs: [], outputs: [] },
 ] as const;
 
+// HiveGovernor.Proposal fields are returned by the public mapping getter in
+// source-declaration order. The struct was reordered for storage packing
+// (audit fix) so the ABI follows the new order.
 export const GOVERNOR_ABI = [
   { type: "function", name: "proposalCount", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { type: "function", name: "taskCount", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
@@ -56,8 +61,6 @@ export const GOVERNOR_ABI = [
     { name: "description", type: "string" },
     { name: "category", type: "string" },
     { name: "buildTime", type: "string" },
-    { name: "complexity", type: "uint8" },
-    { name: "marketPotential", type: "uint8" },
     { name: "votingStart", type: "uint64" },
     { name: "votingEnd", type: "uint64" },
     { name: "yes", type: "uint128" },
@@ -65,6 +68,8 @@ export const GOVERNOR_ABI = [
     { name: "abstain", type: "uint128" },
     { name: "threshold", type: "uint128" },
     { name: "participants", type: "uint32" },
+    { name: "complexity", type: "uint8" },
+    { name: "marketPotential", type: "uint8" },
     { name: "status", type: "uint8" },
   ] },
   { type: "function", name: "proposalVotes", stateMutability: "view",
@@ -73,11 +78,11 @@ export const GOVERNOR_ABI = [
   { type: "function", name: "tasks", stateMutability: "view", inputs: [{ type: "uint256" }], outputs: [
     { name: "projectKey", type: "bytes32" },
     { name: "description", type: "string" },
-    { name: "stage", type: "uint8" },
     { name: "votingStart", type: "uint64" },
     { name: "votingEnd", type: "uint64" },
     { name: "threshold", type: "uint128" },
     { name: "totalVotes", type: "uint128" },
+    { name: "stage", type: "uint8" },
     { name: "optionCount", type: "uint8" },
     { name: "status", type: "uint8" },
     { name: "decidedOption", type: "uint8" },

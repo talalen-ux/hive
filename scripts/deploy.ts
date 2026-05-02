@@ -90,6 +90,9 @@ async function main() {
   const governorAddr = await governor.getAddress();
   console.log("HiveGovernor:", governorAddr);
 
+  // Wire the governor's vote-freeze hook on staking. One-shot.
+  await (await staking.setGovernor(governorAddr)).wait();
+
   console.log("\n✅ Hive stack deployed and wired.");
   console.log("Next steps:");
   console.log("  1. scripts/seedLiquidity.ts — fund the Uniswap V2 pool");

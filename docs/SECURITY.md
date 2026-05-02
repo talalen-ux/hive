@@ -1,15 +1,16 @@
 # Hive — Security Plan
 
-This document captures every concrete vulnerability surfaced in the audit
+This document captures every concrete vulnerability surfaced in the audits
 of the Hive contract suite and the engineering response. It is the
 source of truth for what is fixed in code, what is mitigated by
 deployment procedure, and what remains an accepted residual risk.
 
-The audit covered four contracts:
+The audits covered five contracts:
 - `HiveToken.sol` — ERC-20 + optional 4% transfer tax
 - `HiveStaking.sol` — lock-tier staking with forfeit-on-early-exit
 - `HiveRewards.sol` — MasterChef-style HIVE+ETH accumulator
 - `NectarVault.sol` — permissionless fee harvester
+- `HiveGovernor.sol` — proposal + task voting (added in slice 2)
 
 ## 0. Threat model
 
@@ -223,7 +224,94 @@ On-chain alerts (Tenderly / Defender) on:
   on-chain swap, that version is a **separate audit** because it
   introduces MEV/sandwich exposure.
 
-## 7. Test coverage targets
+## 7. Audit round 2 — HiveGovernor + regressions
+
+A second audit (post-slice-2) covered `HiveGovernor.sol` for the first time
+plus a regression sweep of the four older contracts.
+
+### H-G1 — Vote-survives-unstake (governance integrity)
+*Risk:* `HiveGovernor.vote` checks `lockEnd >= votingEnd` at vote-cast time
+but nothing prevents the voter from calling `HiveStaking.unstake` immediately
+after. Their cast vote remains tallied while their principal walks. Cost
+of attack = the user's pending reward dust.
+
+*Fix (code):* `HiveStaking` now exposes `voteFreezeUntil[user]` and a one-shot
+`setGovernor` that authorises only the configured governor to extend the
+freeze. Each `vote` / `voteTask` call invokes
+`staking.freezeUntil(voter, votingEnd)`. `_unstake` reverts with
+`VoteFreezeActive(until)` when called inside the freeze. The vote is now
+collateralised through close.
+
+*Operational:* deploy script calls `staking.setGovernor(governor)` after the
+governor is deployed. `setGovernor` is one-shot — the relationship is
+permanent.
+
+### H-G2 — Threshold default gameable
+*Risk:* the prior `threshold == 0 → snapshot 1% of totalWeighted at create`
+let an actor mass-unstake right before an oracle tx to crater
+`totalWeighted` and drop the bar to a value they alone could clear.
+
+*Fix:* `createProposal` and `createTask` revert with `ThresholdRequired` on
+`threshold == 0`. The oracle now reads `staking.totalWeighted()` once per
+batch (via `governor.staking()`), takes 1% (floored at 1), and passes that
+fixed threshold to every proposal in the batch — single snapshot, no
+per-tx manipulation surface.
+
+### H-G3 — Duplicate `unstake()` bodies
+*Fix:* both overloads route through a shared `_unstake(address)` so the
+two paths cannot diverge.
+
+### M-G3 / M-G4 — Unbounded strings, duplicate option labels
+*Fix:* explicit byte-length caps on every free-form field
+(`MAX_TITLE_LEN`, `MAX_CATEGORY_LEN`, `MAX_OPTION_LABEL_LEN`, etc.). Tasks
+reject duplicate option labels via an O(n²) keccak compare (n ≤ 5).
+
+### M-G2 (task) — Tie at the top of `finalizeTask`
+*Fix:* the loop now tracks `runnerUpVotes`. When `leaderVotes ==
+runnerUpVotes`, `finalizeTask` returns `STATUS_REJECTED` with
+`decidedOption = 0` instead of silently picking the lowest-indexed option.
+
+### M-G5 — Two-step oracle rotation with cooldown
+*Fix:* `proposeOracle` → `acceptOracleRotation` flow with
+`ORACLE_ROTATION_DELAY = 24h` between them, plus a `cancelOracleRotation`
+abort. A compromised owner key can no longer instantly swap the oracle.
+
+### M-V1 — `NectarVault.harvest` doesn't sync rewards
+*Fix:* `harvest` now calls `rewards.sync()` after forwarding so the next
+user-facing read reflects the harvest without piggybacking the gas onto a
+random staker. Also short-circuits and skips the `Harvested` event when
+both balances are zero.
+
+### M-T1 — `setTaxedPair(0, true)` accepted dead bookkeeping
+*Fix:* explicit `pair != address(0)` revert.
+
+### L-G3 / L-S1 / L-R1 — Misc hygiene
+- `taskOption(0)` reverts with `BadOption` instead of returning a zero struct.
+- `stakeWithPermit` swallows benign permit reverts when allowance already
+  covers the stake (front-run protection / re-use UX).
+- `HiveRewards.claim` ETH transfer gas budget bumped from 50k to 100k —
+  fewer benign deferrals from contract wallets that emit logs in `receive`.
+
+### Gas pass
+- All five contracts use custom errors instead of revert strings on hot
+  paths (~50% calldata savings on revert + ~120 gas per check).
+- `HiveGovernor.Proposal` and `Task` structs reordered so the fixed-width
+  trailers pack into the minimum number of slots.
+- `unchecked` blocks on subtractions that are safe-by-invariant
+  (`HiveStaking.totalStaked/totalWeighted -= …` on unstake,
+  `HiveRewards._accountedHive/Eth -= …` on claim).
+
+### Frontend / oracle (separate audits)
+The `useTick` re-subscribe storm was fixed by hoisting the subscribe
+function to module scope behind a single 1Hz interval. Per-id reads to
+`proposalVotes`/`taskVotes` are gated on a connected wallet and capped at
+50. The on-chain decoders dropped their dead "array shape" branches with
+unsafe casts. The oracle's dedup window grew from 20 to 200 with normalized
+matching, threshold is read live from `staking.totalWeighted()`, content is
+sanitized before posting, and viem revert reasons surface in the catch
+block. See the audit transcripts for the full punch list.
+
+## 8. Test coverage targets
 
 The test suite must cover, at minimum:
 1. ✅ `MIN_LOCK` rejection
@@ -240,3 +328,10 @@ The test suite must cover, at minimum:
 12. **Dead-weight permanently dilutes** (new)
 13. **One-shot setter rejects second call** (new)
 14. **Tax exemption cannot be revoked from protocol contracts** (new)
+15. **Vote freeze blocks unstake during open vote** (round 2)
+16. **Threshold == 0 rejected** (round 2)
+17. **Duplicate option labels rejected** (round 2)
+18. **Tie in finalizeTask → REJECTED** (round 2)
+19. **Two-step oracle rotation enforces cooldown** (round 2)
+20. **harvest no-ops cleanly when nothing pending** (round 2)
+21. **Bounded strings on every free-form proposal/task field** (round 2)

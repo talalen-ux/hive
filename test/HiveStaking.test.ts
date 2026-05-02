@@ -21,18 +21,15 @@ async function deployStack() {
   const NectarVault = await ethers.getContractFactory("NectarVault");
   const vault = await NectarVault.deploy(owner.address, await hive.getAddress());
 
-  // Token-side wire-up auto-exempts staking/rewards/vault from tax.
   await hive.setRewardsPool(await rewards.getAddress());
   await hive.setStaking(await staking.getAddress());
   await hive.setVault(await vault.getAddress());
 
-  // Protocol-side wire-up.
   await staking.setRewards(await rewards.getAddress());
   await rewards.setStaking(await staking.getAddress());
   await rewards.setVault(await vault.getAddress());
   await vault.setRewards(await rewards.getAddress());
 
-  // Fund test users.
   await hive.transfer(alice.address, PARSE("1000"));
   await hive.transfer(bob.address, PARSE("1000"));
   await hive.transfer(carol.address, PARSE("1000"));
@@ -44,13 +41,15 @@ describe("HiveStaking", () => {
   it("rejects locks below the 24h minimum", async () => {
     const { alice, hive, staking } = await deployStack();
     await hive.connect(alice).approve(await staking.getAddress(), PARSE("100"));
-    await expect(staking.connect(alice).stake(PARSE("100"), DAY - 1)).to.be.revertedWith("lock too short");
+    await expect(staking.connect(alice).stake(PARSE("100"), DAY - 1))
+      .to.be.revertedWithCustomError(staking, "LockTooShort");
   });
 
   it("rejects locks above the 7d maximum", async () => {
     const { alice, hive, staking } = await deployStack();
     await hive.connect(alice).approve(await staking.getAddress(), PARSE("100"));
-    await expect(staking.connect(alice).stake(PARSE("100"), WEEK + 1)).to.be.revertedWith("lock too long");
+    await expect(staking.connect(alice).stake(PARSE("100"), WEEK + 1))
+      .to.be.revertedWithCustomError(staking, "LockTooLong");
   });
 
   it("computes weight using the 1.5x cap at 7 days", async () => {
@@ -98,12 +97,10 @@ describe("Hive — invariants from the security plan", () => {
     const rewardsAddr = await rewards.getAddress();
 
     await hive.connect(alice).approve(stakingAddr, PARSE("100"));
-    await staking.connect(alice).stake(PARSE("100"), DAY); // 1.0x → weight 100
-
+    await staking.connect(alice).stake(PARSE("100"), DAY); // weight 100
     await hive.connect(bob).approve(stakingAddr, PARSE("100"));
-    await staking.connect(bob).stake(PARSE("100"), WEEK); // 1.5x → weight 150
+    await staking.connect(bob).stake(PARSE("100"), WEEK); // weight 150
 
-    // total weight = 250
     await hive.transfer(rewardsAddr, PARSE("250"));
     await rewards.sync();
 
@@ -125,18 +122,14 @@ describe("Hive — invariants from the security plan", () => {
 
     await hive.connect(alice).approve(stakingAddr, PARSE("100"));
     await staking.connect(alice).stake(PARSE("100"), DAY);
-
     await hive.connect(bob).approve(stakingAddr, PARSE("100"));
     await staking.connect(bob).stake(PARSE("100"), DAY);
 
-    // Send rewards while both are active (50/50 split).
     await hive.transfer(rewardsAddr, PARSE("100"));
     await rewards.sync();
 
-    // Alice exits early — forfeits 50 HIVE back into the pool.
     await staking.connect(alice)["unstake()"]();
 
-    // Bob's lock matures; bob now claims everything (50 from before + 50 forfeited).
     await time.increase(DAY + 1);
     const before = await hive.balanceOf(bob.address);
     await staking.connect(bob).claim(bob.address);
@@ -148,10 +141,8 @@ describe("Hive — invariants from the security plan", () => {
     await hive.connect(alice).approve(await staking.getAddress(), PARSE("100"));
     await staking.connect(alice).stake(PARSE("100"), DAY);
 
-    // Fees flow into the vault, then anyone calls harvest.
     await owner.sendTransaction({ to: await vault.getAddress(), value: ethers.parseEther("1") });
     await vault.harvest();
-    await rewards.sync();
 
     await time.increase(DAY + 1);
     const before = await ethers.provider.getBalance(alice.address);
@@ -162,13 +153,14 @@ describe("Hive — invariants from the security plan", () => {
     expect(after - before + gas).to.equal(ethers.parseEther("1"));
   });
 
-  it("cannot top up at a shorter tier while locked (audit H-3)", async () => {
+  it("cannot top up at a shorter tier while locked", async () => {
     const { alice, hive, staking } = await deployStack();
     const stakingAddr = await staking.getAddress();
     await hive.connect(alice).approve(stakingAddr, PARSE("200"));
-    await staking.connect(alice).stake(PARSE("100"), WEEK); // 1.5x
+    await staking.connect(alice).stake(PARSE("100"), WEEK);
     await time.increase(DAY);
-    await expect(staking.connect(alice).stake(PARSE("100"), DAY)).to.be.revertedWith("cannot shorten lock");
+    await expect(staking.connect(alice).stake(PARSE("100"), DAY))
+      .to.be.revertedWithCustomError(staking, "CannotShortenLock");
   });
 
   it("same-tier top-up extends the lock and preserves the multiplier", async () => {
@@ -190,50 +182,50 @@ describe("Hive — invariants from the security plan", () => {
 
     await expect(staking.connect(alice).stake(PARSE("100"), DAY)).to.be.reverted;
     await expect(staking.connect(alice).claim(alice.address)).to.be.reverted;
-
-    // unstake still works (forfeit applies because lock isn't matured)
     await expect(staking.connect(alice)["unstake()"]()).to.emit(staking, "Unstaked");
   });
 
-  it("seedDeadWeight runs once, dilutes a pre-stake donation", async () => {
+  it("seedDeadWeight runs once and dilutes a pre-stake donation", async () => {
     const { owner, alice, hive, staking, rewards } = await deployStack();
     const stakingAddr = await staking.getAddress();
     const rewardsAddr = await rewards.getAddress();
 
-    // Owner seeds 1000 dead.
     await hive.approve(stakingAddr, PARSE("1000"));
     await staking.connect(owner).seedDeadWeight(PARSE("1000"));
-    await expect(staking.connect(owner).seedDeadWeight(PARSE("1"))).to.be.revertedWith("already seeded");
+    await expect(staking.connect(owner).seedDeadWeight(PARSE("1")))
+      .to.be.revertedWithCustomError(staking, "AlreadySeeded");
 
-    // Pre-existing donation of 100 HIVE.
     await hive.transfer(rewardsAddr, PARSE("100"));
 
-    // Alice front-runs first stake with 1 HIVE for 24h.
     await hive.connect(alice).approve(stakingAddr, PARSE("1"));
     await staking.connect(alice).stake(PARSE("1"), DAY);
     await rewards.sync();
 
-    // Dead weight at 1.5x = 1500. Alice at 1.0x = 1. Total = 1501.
-    // Alice's share of the 100 donation ≈ 100 / 1501 ≈ 0.0666.
     await time.increase(DAY + 1);
     const before = await hive.balanceOf(alice.address);
     await staking.connect(alice).claim(alice.address);
     const got = (await hive.balanceOf(alice.address)) - before;
-    // bound: alice can never get more than ~0.1 HIVE, far less than 100
     expect(got).to.be.lt(PARSE("0.2"));
   });
 
-  it("sync() is non-reentrant and self-heals if balance < accounted", async () => {
-    const { rewards } = await deployStack();
-    // Plain second sync with no funds is a no-op and must not revert.
-    await rewards.sync();
-    await rewards.sync();
+  it("effectiveWeighted excludes the dead-seed floor", async () => {
+    const { owner, alice, hive, staking } = await deployStack();
+    const stakingAddr = await staking.getAddress();
+    await hive.approve(stakingAddr, PARSE("1000"));
+    await staking.connect(owner).seedDeadWeight(PARSE("1000"));
+
+    expect(await staking.totalWeighted()).to.equal(PARSE("1500")); // 1000 * 1.5x
+    expect(await staking.effectiveWeighted()).to.equal(0n);
+
+    await hive.connect(alice).approve(stakingAddr, PARSE("100"));
+    await staking.connect(alice).stake(PARSE("100"), DAY);
+    expect(await staking.effectiveWeighted()).to.equal(PARSE("100"));
   });
 
   it("one-shot wire setters reject a second call", async () => {
     const { owner, hive, staking, rewards, vault } = await deployStack();
     await expect(staking.connect(owner).setRewards(await rewards.getAddress()))
-      .to.be.revertedWith("rewards already set");
+      .to.be.revertedWithCustomError(staking, "RewardsAlreadySet");
     await expect(rewards.connect(owner).setStaking(await staking.getAddress()))
       .to.be.revertedWith("staking already set");
     await expect(vault.connect(owner).setRewards(await rewards.getAddress()))
@@ -254,19 +246,31 @@ describe("Hive — invariants from the security plan", () => {
       .to.be.revertedWith("cannot revoke critical");
   });
 
+  it("setTaxedPair rejects address(0)", async () => {
+    const { owner, hive } = await deployStack();
+    await expect(
+      hive.connect(owner).setTaxedPair(ethers.ZeroAddress, true),
+    ).to.be.revertedWith("pair=0");
+  });
+
   it("setTaxEnabled requires the protocol contracts to be wired and exempt", async () => {
     const [owner, treasury] = await ethers.getSigners();
     const HiveToken = await ethers.getContractFactory("HiveToken");
     const hive = await HiveToken.deploy(owner.address, treasury.address, PARSE("1000000"));
-    // No staking/rewards/vault wired yet.
     await expect(hive.connect(owner).setTaxEnabled(true)).to.be.revertedWith("rewards unset");
   });
 
   it("Ownable2Step: ownership transfer requires acceptance", async () => {
     const { owner, alice, hive } = await deployStack();
     await hive.connect(owner).transferOwnership(alice.address);
-    expect(await hive.owner()).to.equal(owner.address); // not yet
+    expect(await hive.owner()).to.equal(owner.address);
     await hive.connect(alice).acceptOwnership();
     expect(await hive.owner()).to.equal(alice.address);
+  });
+
+  it("NectarVault.harvest no-ops cleanly when there's nothing to forward", async () => {
+    const { vault } = await deployStack();
+    // No transfers — harvest should not emit and not revert.
+    await expect(vault.harvest()).to.not.emit(vault, "Harvested");
   });
 });

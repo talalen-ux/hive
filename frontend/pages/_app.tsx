@@ -1,14 +1,18 @@
 import type { AppProps } from "next/app";
 import Head from "next/head";
+import { useState } from "react";
 import { WagmiProvider } from "wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { wagmiConfig } from "@/lib/wagmi";
 import { Layout } from "@/components/Layout";
 import "@/styles/globals.css";
 
-const queryClient = new QueryClient();
-
 export default function App({ Component, pageProps }: AppProps) {
+  // One QueryClient per request. Keeping it in module scope leaks cache
+  // across users in SSR — this is the React Query + Next.js Pages Router
+  // recommendation.
+  const [queryClient] = useState(() => new QueryClient());
+
   return (
     <WagmiProvider config={wagmiConfig}>
       <QueryClientProvider client={queryClient}>

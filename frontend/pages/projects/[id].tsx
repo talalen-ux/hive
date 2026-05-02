@@ -7,7 +7,6 @@ import { useProject } from "@/hooks/useProjects";
 import { PipelineProgress } from "@/components/incubator/PipelineProgress";
 import { TaskVote } from "@/components/incubator/TaskVote";
 import {
-  STAGE_LABEL,
   STAGE_ORDER,
   categoryAccent,
   type Project,

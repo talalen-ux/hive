@@ -6,7 +6,7 @@ type Props = {
 };
 
 export function Countdown({ end, className }: Props) {
-  useTick(1000);
+  useTick();
   const remaining = Math.max(0, end - Date.now());
   if (remaining === 0) {
     return <span className={className}>closed</span>;

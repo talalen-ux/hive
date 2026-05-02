@@ -12,20 +12,17 @@ export function useProjects(initial: Project[] = []) {
   const [state, setState] = useState<State>({ projects: initial, loading: true });
 
   useEffect(() => {
-    let alive = true;
-    fetch("/api/projects")
+    const controller = new AbortController();
+    fetch("/api/projects", { signal: controller.signal })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`http ${r.status}`))))
       .then((d: { projects: Project[] }) => {
-        if (!alive) return;
         setState({ projects: hydrate(d.projects), loading: false });
       })
       .catch((e: Error) => {
-        if (!alive) return;
+        if (e.name === "AbortError") return;
         setState((s) => ({ ...s, loading: false, error: e.message }));
       });
-    return () => {
-      alive = false;
-    };
+    return () => controller.abort();
   }, []);
 
   return state;
@@ -39,27 +36,22 @@ export function useProject(key: string | undefined, initial?: Project) {
 
   useEffect(() => {
     if (!key) return;
-    let alive = true;
-    fetch(`/api/projects/${encodeURIComponent(key)}`)
+    const controller = new AbortController();
+    fetch(`/api/projects/${encodeURIComponent(key)}`, { signal: controller.signal })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`http ${r.status}`))))
       .then((d: { project: Project }) => {
-        if (!alive) return;
         setState({ project: hydrateOne(d.project), loading: false });
       })
       .catch((e: Error) => {
-        if (!alive) return;
+        if (e.name === "AbortError") return;
         setState((s) => ({ ...s, loading: false, error: e.message }));
       });
-    return () => {
-      alive = false;
-    };
+    return () => controller.abort();
   }, [key]);
 
   return state;
 }
 
-// JSON-over-HTTP collapses Date / number distinctions; keep timestamps as
-// numbers and discard nullish completedAt.
 function hydrate(arr: Project[]): Project[] {
   return arr.map(hydrateOne);
 }

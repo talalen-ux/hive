@@ -22,6 +22,7 @@ export function useStakerData() {
           { address: addresses.staking, abi: STAKING_ABI, functionName: "stakes", args: [address] },
           { address: addresses.staking, abi: STAKING_ABI, functionName: "totalStaked" },
           { address: addresses.staking, abi: STAKING_ABI, functionName: "totalWeighted" },
+          { address: addresses.staking, abi: STAKING_ABI, functionName: "effectiveWeighted" },
           { address: addresses.rewards, abi: REWARDS_ABI, functionName: "pendingHive", args: [address] },
           { address: addresses.rewards, abi: REWARDS_ABI, functionName: "pendingEth", args: [address] },
         ]
@@ -51,8 +52,12 @@ export function useStakerData() {
     lockDuration: Number(stake?.lockDuration ?? 0n),
     totalStaked: (data?.[3]?.result as bigint | undefined) ?? 0n,
     totalWeighted: (data?.[4]?.result as bigint | undefined) ?? 0n,
-    pendingHive: (data?.[5]?.result as bigint | undefined) ?? 0n,
-    pendingEth: (data?.[6]?.result as bigint | undefined) ?? 0n,
+    /** Same as `totalWeighted` minus the burn-floor (DEAD-seed) weight.
+     *  Use this for any user-facing "weighted stake" / TVL metric so the
+     *  MINIMUM_LIQUIDITY-style floor doesn't inflate the displayed number. */
+    effectiveWeighted: (data?.[5]?.result as bigint | undefined) ?? 0n,
+    pendingHive: (data?.[6]?.result as bigint | undefined) ?? 0n,
+    pendingEth: (data?.[7]?.result as bigint | undefined) ?? 0n,
   };
 }
 
