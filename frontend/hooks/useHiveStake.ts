@@ -1,21 +1,20 @@
 import { useAccount, useChainId, useReadContracts, useWriteContract } from "wagmi";
 import { parseUnits, type Address } from "viem";
-import { ADDRESSES } from "@/lib/addresses";
+import { getAddresses, isLiveOn } from "@/lib/addresses";
 import { HIVE_TOKEN_ABI, STAKING_ABI, REWARDS_ABI } from "@/lib/abis";
 
 export function useHiveContext() {
   const chainId = useChainId();
-  const a = ADDRESSES[chainId] ?? ADDRESSES[1];
-  return { chainId, addresses: a };
+  return { chainId, addresses: getAddresses(chainId), live: isLiveOn(chainId) };
 }
 
 export function useStakerData() {
   const { address } = useAccount();
-  const { addresses } = useHiveContext();
+  const { addresses, live } = useHiveContext();
 
   const { data, isLoading, refetch } = useReadContracts({
     allowFailure: true,
-    query: { enabled: Boolean(address), refetchInterval: 12_000 },
+    query: { enabled: Boolean(address) && live, refetchInterval: 12_000 },
     contracts: address
       ? [
           { address: addresses.hive, abi: HIVE_TOKEN_ABI, functionName: "balanceOf", args: [address] },

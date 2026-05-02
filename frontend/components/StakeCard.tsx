@@ -3,7 +3,7 @@ import { useAccount } from "wagmi";
 import { parseUnits } from "viem";
 import { motion } from "framer-motion";
 import { LockTierPicker } from "./LockTierPicker";
-import { useHiveActions, useStakerData } from "@/hooks/useHiveStake";
+import { useHiveActions, useHiveContext, useStakerData } from "@/hooks/useHiveStake";
 import { fmtToken } from "@/lib/format";
 
 type Props = {
@@ -12,6 +12,7 @@ type Props = {
 
 export function StakeCard({ onActivity }: Props) {
   const { address } = useAccount();
+  const { live } = useHiveContext();
   const data = useStakerData();
   const actions = useHiveActions();
   const [amount, setAmount] = useState("");
@@ -94,11 +95,13 @@ export function StakeCard({ onActivity }: Props) {
       <motion.button
         whileHover={{ y: -1 }}
         whileTap={{ scale: 0.98 }}
-        disabled={busy !== null || parsed === 0n}
+        disabled={!live || busy !== null || parsed === 0n}
         onClick={needsApproval ? onApprove : onStake}
         className="mt-7 w-full rounded-full bg-gradient-to-br from-honey-soft to-honey px-6 py-3 text-[12px] font-medium tracking-wider2 uppercase text-ink shadow-honey hover:shadow-honeyStrong transition-all disabled:opacity-40 disabled:shadow-none"
       >
-        {needsApproval
+        {!live
+          ? "Awaiting deployment"
+          : needsApproval
           ? busy === "approve" ? "Approving…" : "Approve HIVE"
           : busy === "stake" ? "Entering Hive…" : "Enter Hive"}
       </motion.button>
