@@ -1,11 +1,14 @@
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { useIncubator } from "@/hooks/useIncubator";
+import { useProjects } from "@/hooks/useProjects";
 import { PipelineProgress } from "@/components/incubator/PipelineProgress";
 import { categoryAccent, STAGE_LABEL } from "@/lib/incubator";
 
 export default function ProjectsIndex() {
   const state = useIncubator();
+  const { projects: apiProjects } = useProjects(state.projects);
+  const projects = apiProjects.length > 0 ? apiProjects : state.projects;
   return (
     <div className="pt-6 sm:pt-12">
       <header className="text-center">
@@ -30,7 +33,7 @@ export default function ProjectsIndex() {
         }}
         className="mt-12 grid grid-cols-1 sm:grid-cols-2 gap-4"
       >
-        {state.projects.map((p) => (
+        {projects.map((p) => (
           <motion.div
             key={p.id}
             variants={{

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hiveoneth.xyz/schemas/projects.json",
+  "title": "Hive incubator projects",
+  "type": "object",
+  "required": ["projects"],
+  "properties": {
+    "projects": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/project" }
+    }
+  },
+  "$defs": {
+    "project": {
+      "type": "object",
+      "required": ["key", "name", "category", "tagline", "currentStage", "stages", "startedAtIso"],
+      "properties": {
+        "key": { "type": "string", "pattern": "^[a-z0-9-]{3,40}$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "category": { "enum": ["consumer", "defi", "infra", "social", "tooling"] },
+        "tagline": { "type": "string", "maxLength": 120 },
+        "longDescription": { "type": "string", "maxLength": 1000 },
+        "twitter": { "type": ["string", "null"] },
+        "website": { "type": ["string", "null"] },
+        "logoStyle": {
+          "enum": ["honey-glass", "comb-gradient", "drip-serif", "hex-bloom", "neon-pollen"]
+        },
+        "currentStage": {
+          "enum": ["INITIATION", "IDENTITY", "WEBSITE_V1", "PRODUCT_DESIGN", "LAUNCH"]
+        },
+        "stages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["stage", "status"],
+            "properties": {
+              "stage": {
+                "enum": ["INITIATION", "IDENTITY", "WEBSITE_V1", "PRODUCT_DESIGN", "LAUNCH"]
+              },
+              "status": { "enum": ["DONE", "ACTIVE", "PENDING"] },
+              "completedAtIso": { "type": "string", "format": "date-time" }
+            }
+          }
+        },
+        "startedAtIso": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

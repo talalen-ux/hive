@@ -1,0 +1,62 @@
+{
+  "$schema": "./projects.schema.json",
+  "projects": [
+    {
+      "key": "proj-buzz",
+      "name": "Buzz",
+      "category": "social",
+      "tagline": "On-chain telegram for the swarm.",
+      "longDescription": "Buzz is the social layer for Hive holders. Token-gated rooms, reputation bound to staked HIVE, mods elected by stake-weighted vote. Posts are signed and indexed; identities are pseudonymous.",
+      "twitter": null,
+      "website": null,
+      "logoStyle": "honey-glass",
+      "currentStage": "WEBSITE_V1",
+      "stages": [
+        { "stage": "INITIATION", "status": "DONE", "completedAtIso": "2026-04-20T00:00:00Z" },
+        { "stage": "IDENTITY", "status": "DONE", "completedAtIso": "2026-04-26T00:00:00Z" },
+        { "stage": "WEBSITE_V1", "status": "ACTIVE" },
+        { "stage": "PRODUCT_DESIGN", "status": "PENDING" },
+        { "stage": "LAUNCH", "status": "PENDING" }
+      ],
+      "startedAtIso": "2026-04-18T00:00:00Z"
+    },
+    {
+      "key": "proj-meadow",
+      "name": "Meadow",
+      "category": "defi",
+      "tagline": "Yield aggregator with hex-shaped vaults.",
+      "longDescription": "Meadow batches dust positions across L2s into a single auto-compounded vault. Hex-shaped vault UIs, transparent strategies, governance by stake-weighted vote.",
+      "twitter": null,
+      "website": null,
+      "logoStyle": "comb-gradient",
+      "currentStage": "IDENTITY",
+      "stages": [
+        { "stage": "INITIATION", "status": "DONE", "completedAtIso": "2026-04-28T00:00:00Z" },
+        { "stage": "IDENTITY", "status": "ACTIVE" },
+        { "stage": "WEBSITE_V1", "status": "PENDING" },
+        { "stage": "PRODUCT_DESIGN", "status": "PENDING" },
+        { "stage": "LAUNCH", "status": "PENDING" }
+      ],
+      "startedAtIso": "2026-04-27T00:00:00Z"
+    },
+    {
+      "key": "proj-drone",
+      "name": "Forager",
+      "category": "infra",
+      "tagline": "Onchain agent that hunts opportunity for the hive.",
+      "longDescription": "Forager is a multisig-tethered autonomous agent. Token holders vote on the tools the agent may invoke; the multisig signs every action. Researches opportunities, drafts proposals, never takes irreversible actions without consent.",
+      "twitter": null,
+      "website": null,
+      "logoStyle": "drip-serif",
+      "currentStage": "PRODUCT_DESIGN",
+      "stages": [
+        { "stage": "INITIATION", "status": "DONE", "completedAtIso": "2026-04-10T00:00:00Z" },
+        { "stage": "IDENTITY", "status": "DONE", "completedAtIso": "2026-04-16T00:00:00Z" },
+        { "stage": "WEBSITE_V1", "status": "DONE", "completedAtIso": "2026-04-24T00:00:00Z" },
+        { "stage": "PRODUCT_DESIGN", "status": "ACTIVE" },
+        { "stage": "LAUNCH", "status": "PENDING" }
+      ],
+      "startedAtIso": "2026-04-08T00:00:00Z"
+    }
+  ]
+}

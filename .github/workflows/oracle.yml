@@ -1,0 +1,47 @@
+name: Hive oracle — generate ideas
+
+on:
+  schedule:
+    # Every 6 hours. Adjust to taste; the contract enforces a 24h–7d voting
+    # window so anything more frequent than every few hours is overkill.
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (skip on-chain writes)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: hive-oracle
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: services/oracle/package-lock.json
+
+      - name: Install
+        working-directory: services/oracle
+        run: npm ci || npm install
+
+      - name: Generate
+        working-directory: services/oracle
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          RPC_URL: ${{ secrets.HIVE_RPC_URL }}
+          CHAIN_ID: ${{ vars.HIVE_CHAIN_ID || '1' }}
+          GOVERNOR_ADDRESS: ${{ secrets.HIVE_GOVERNOR_ADDRESS }}
+          ORACLE_PRIVATE_KEY: ${{ secrets.HIVE_ORACLE_PRIVATE_KEY }}
+          IDEAS_PER_RUN: ${{ vars.HIVE_IDEAS_PER_RUN || '5' }}
+          VOTING_WINDOW_HOURS: ${{ vars.HIVE_VOTING_WINDOW_HOURS || '48' }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: npm run generate

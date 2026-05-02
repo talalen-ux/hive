@@ -3,6 +3,7 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 import { useMemo } from "react";
 import { useIncubator } from "@/hooks/useIncubator";
+import { useProject } from "@/hooks/useProjects";
 import { PipelineProgress } from "@/components/incubator/PipelineProgress";
 import { TaskVote } from "@/components/incubator/TaskVote";
 import {
@@ -16,10 +17,12 @@ export default function ProjectDetail() {
   const router = useRouter();
   const { id } = router.query;
   const state = useIncubator();
-  const project = useMemo(
+  const seed = useMemo(
     () => state.projects.find((p) => p.id === id),
     [state.projects, id],
   );
+  const { project: apiProject } = useProject(typeof id === "string" ? id : undefined, seed);
+  const project = apiProject ?? seed;
 
   if (!project) {
     return (
