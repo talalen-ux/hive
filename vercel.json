@@ -1,8 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
-  "buildCommand": "cd frontend && npm install --legacy-peer-deps && npm run build",
-  "installCommand": "echo skipping root install",
+  "buildCommand": "cd frontend && npm run build",
+  "installCommand": "npm install next@14.2.0 --no-save --silent && cd frontend && npm install --legacy-peer-deps",
   "outputDirectory": "frontend/.next",
   "devCommand": "cd frontend && npm run dev"
 }
