@@ -36,9 +36,25 @@ export function useIncubator() {
       ideas: onchain.ideas.length > 0 ? onchain.ideas : mock.ideas,
       proposals: onchain.proposals.length > 0 ? onchain.proposals : mock.proposals,
       tasks: onchain.tasks.length > 0 ? onchain.tasks : mock.tasks,
+      // On-chain community proposals carry a keccak'd projectKey rather
+      // than the FE project id. The project detail page does its own
+      // keccak match, so we just append. Mock entries (with FE project
+      // ids like "proj-buzz") still render alongside.
+      communityProposals: [
+        ...mock.communityProposals,
+        ...onchain.communityProposals,
+      ],
       myVotes: { ...mock.myVotes, ...onchain.myVotes },
     };
-  }, [mock, onchain.enabled, onchain.ideas, onchain.proposals, onchain.tasks, onchain.myVotes]);
+  }, [
+    mock,
+    onchain.enabled,
+    onchain.ideas,
+    onchain.proposals,
+    onchain.tasks,
+    onchain.communityProposals,
+    onchain.myVotes,
+  ]);
 }
 
 // ────────── stable tick clock for countdowns ──────────
@@ -127,14 +143,54 @@ export function useIncubatorActions() {
     },
     approveIdea: (ideaId: string) => mockApproveIdea(ideaId),
     rejectIdea: (ideaId: string) => mockRejectIdea(ideaId),
-    submitCommunityProposal: (input: {
+
+    /**
+     * Submit a community proposal. On-chain when the governor is wired AND
+     * the user has at least minProposeStake of HIVE staked (the contract
+     * enforces this — we surface the revert as a returned error rather
+     * than throw out of the action layer). Falls back to mock store.
+     *
+     * Voting window is fixed at 24h and threshold at 1 wei (the contract
+     * just requires non-zero); production governance would tune both off
+     * the live totalStaked.
+     */
+    submitCommunityProposal: async (input: {
       projectId: string;
       title: string;
       description: string;
       submitter: string;
-    }) => mockSubmitProposal(input),
-    voteOnCommunityProposal: (id: string, choice: "yes" | "no" | "abstain") =>
-      mockVoteOnCommunity(id, choice),
+    }): Promise<{ id: string } | { error: string }> => {
+      if (gov.enabled) {
+        const votingEnd = BigInt(Math.floor(Date.now() / 1000) + 24 * 60 * 60 + 5 * 60);
+        try {
+          await gov.submitCommunity({
+            projectId: input.projectId,
+            title: input.title,
+            description: input.description,
+            votingEndUnixSec: votingEnd,
+            threshold: 1n,
+          });
+          return { id: "onchain" };
+        } catch (e) {
+          return { error: e instanceof Error ? e.message : String(e) };
+        }
+      }
+      return mockSubmitProposal(input);
+    },
+    voteOnCommunityProposal: async (id: string, choice: "yes" | "no" | "abstain") => {
+      const n = onchainCommunityIdOrNull(id);
+      if (gov.enabled && n !== null) {
+        const code = choice === "yes" ? 1 : choice === "no" ? 2 : 3;
+        await gov.voteOnCommunity(n, code as 1 | 2 | 3);
+      } else {
+        mockVoteOnCommunity(id, choice);
+      }
+    },
+    finalizeCommunity: async (id: string) => {
+      const n = onchainCommunityIdOrNull(id);
+      if (!gov.enabled || n === null) return;
+      await gov.finalizeCommunity(n);
+    },
   };
 }
 
@@ -146,5 +202,10 @@ export function useIncubatorActions() {
  */
 function onchainIdOrNull(id: string, prefix: "prop" | "task"): number | null {
   const m = new RegExp(`^${prefix}-(\\d+)$`).exec(id);
+  return m ? Number(m[1]) : null;
+}
+
+function onchainCommunityIdOrNull(id: string): number | null {
+  const m = /^comm-onchain-(\d+)$/.exec(id);
   return m ? Number(m[1]) : null;
 }

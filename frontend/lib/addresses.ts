@@ -67,9 +67,3 @@ export function hasGovernor(chainId: number | undefined): boolean {
 }
 
 export const SUPPORTED_CHAIN_IDS = Object.keys(ADDRESSES).map((s) => Number(s));
-
-export const LOCK_TIERS = [
-  { label: "24 hours", seconds: 24 * 60 * 60, multiplier: 1.0 },
-  { label: "3 days", seconds: 3 * 24 * 60 * 60, multiplier: 1.2 },
-  { label: "7 days", seconds: 7 * 24 * 60 * 60, multiplier: 1.5 },
-] as const;

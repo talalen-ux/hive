@@ -1,8 +1,10 @@
 import { useMemo } from "react";
 import { useAccount, useChainId, useReadContracts, useWriteContract } from "wagmi";
+import { keccak256, toBytes, type Hex } from "viem";
 import { GOVERNOR_ABI } from "@/lib/abis";
 import { getAddresses, hasGovernor } from "@/lib/addresses";
 import type {
+  CommunityProposal,
   Idea,
   IdeaStatus,
   Proposal,
@@ -16,11 +18,12 @@ import { STAGE_ORDER } from "@/lib/incubator";
  *  scales. Beyond this, paginate or upgrade to a subgraph in slice 3.5. */
 const MAX_PROPOSAL_READS = 50;
 const MAX_TASK_READS = 50;
+const MAX_COMMUNITY_READS = 50;
 
 /**
- * Reads on-chain proposals + tasks from HiveGovernor and adapts them into the
- * same shape the rest of the dapp uses. Falls through to the mock store when
- * the governor address is not configured for the current chain.
+ * Reads on-chain proposals + tasks + community proposals from HiveGovernor
+ * and adapts them into the same shapes the rest of the dapp uses. Falls
+ * through to the mock store when the governor address is not configured.
  */
 export function useGovernorIncubator() {
   const chainId = useChainId();
@@ -36,6 +39,7 @@ export function useGovernorIncubator() {
       ? [
           { address: governor, abi: GOVERNOR_ABI, functionName: "proposalCount" },
           { address: governor, abi: GOVERNOR_ABI, functionName: "taskCount" },
+          { address: governor, abi: GOVERNOR_ABI, functionName: "communityProposalCount" },
         ]
       : [],
   });
@@ -48,8 +52,12 @@ export function useGovernorIncubator() {
     Number((counts.data?.[1]?.result as bigint | undefined) ?? 0n),
     MAX_TASK_READS,
   );
+  const communityCount = Math.min(
+    Number((counts.data?.[2]?.result as bigint | undefined) ?? 0n),
+    MAX_COMMUNITY_READS,
+  );
 
-  // proposal struct fan-out — always issued when count > 0.
+  // proposal struct fan-out
   const proposalReads = useReadContracts({
     allowFailure: true,
     query: { enabled: enabled && proposalCount > 0, refetchInterval: 12_000 },
@@ -63,8 +71,6 @@ export function useGovernorIncubator() {
       : [],
   });
 
-  // user-vote fan-out — only issued when a wallet is connected. Without this
-  // we'd burn one extra eth_call per proposal every 12s for non-voters.
   const proposalMyVoteReads = useReadContracts({
     allowFailure: true,
     query: { enabled: enabled && proposalCount > 0 && !!user, refetchInterval: 12_000 },
@@ -97,6 +103,32 @@ export function useGovernorIncubator() {
           address: governor,
           abi: GOVERNOR_ABI,
           functionName: "taskVotes",
+          args: [BigInt(i + 1), user],
+        }) as const)
+      : [],
+  });
+
+  const communityReads = useReadContracts({
+    allowFailure: true,
+    query: { enabled: enabled && communityCount > 0, refetchInterval: 12_000 },
+    contracts: enabled
+      ? Array.from({ length: communityCount }, (_, i) => ({
+          address: governor,
+          abi: GOVERNOR_ABI,
+          functionName: "communityProposals",
+          args: [BigInt(i + 1)],
+        }) as const)
+      : [],
+  });
+
+  const communityMyVoteReads = useReadContracts({
+    allowFailure: true,
+    query: { enabled: enabled && communityCount > 0 && !!user, refetchInterval: 12_000 },
+    contracts: enabled && user
+      ? Array.from({ length: communityCount }, (_, i) => ({
+          address: governor,
+          abi: GOVERNOR_ABI,
+          functionName: "communityVotes",
           args: [BigInt(i + 1), user],
         }) as const)
       : [],
@@ -179,24 +211,66 @@ export function useGovernorIncubator() {
     return { tasks, taskMyVotes };
   }, [enabled, taskCount, taskReads.data, taskMyVoteReads.data]);
 
+  const { communityProposals, communityMyVotes } = useMemo(() => {
+    const out: CommunityProposal[] = [];
+    const myV: Record<string, string> = {};
+    if (!enabled || !communityReads.data) return { communityProposals: out, communityMyVotes: myV };
+
+    for (let i = 0; i < communityCount; i++) {
+      const raw = communityReads.data[i]?.result;
+      if (!raw) continue;
+      const id = i + 1;
+      const c = decodeCommunityProposal(raw);
+      const cid = `comm-onchain-${id}`;
+      // projectKey is keccak256 of the FE project id; reverse-mapping
+      // happens off-chain. We pass the raw key through; the project page
+      // filters by projectKey === keccak(projectId) before rendering.
+      out.push({
+        id: cid,
+        projectId: c.projectKey,
+        title: c.title,
+        description: c.description,
+        submittedBy: c.submitter,
+        submittedAt: c.votingStart * 1000,
+        votingEnd: c.votingEnd * 1000,
+        yes: Number(c.yes / SCALE),
+        no: Number(c.no / SCALE),
+        abstain: Number(c.abstain / SCALE),
+        participants: c.participants,
+        threshold: Number(c.threshold / SCALE),
+        status: communityStatusFor(c.status),
+        becameTaskId: c.becameTaskId > 0n ? `task-${c.becameTaskId}` : undefined,
+      });
+      const myChoice = decodeChoice(communityMyVoteReads.data?.[i]?.result);
+      if (myChoice) myV[`community:${cid}`] = myChoice;
+    }
+    return { communityProposals: out, communityMyVotes: myV };
+  }, [enabled, communityCount, communityReads.data, communityMyVoteReads.data]);
+
   const merged: Record<string, string> = useMemo(
-    () => ({ ...myVotes, ...taskMyVotes }),
-    [myVotes, taskMyVotes],
+    () => ({ ...myVotes, ...taskMyVotes, ...communityMyVotes }),
+    [myVotes, taskMyVotes, communityMyVotes],
   );
 
   return {
     enabled,
-    isLoading: counts.isLoading || proposalReads.isLoading || taskReads.isLoading,
+    isLoading:
+      counts.isLoading ||
+      proposalReads.isLoading ||
+      taskReads.isLoading ||
+      communityReads.isLoading,
     refetch: async () => {
       await Promise.all([
         counts.refetch(),
         proposalReads.refetch(),
         taskReads.refetch(),
+        communityReads.refetch(),
       ]);
     },
     ideas,
     proposals,
     tasks,
+    communityProposals,
     myVotes: merged,
   };
 }
@@ -223,6 +297,32 @@ export function useGovernorActions() {
         functionName: "voteTask",
         args: [BigInt(taskNumericId), optionIdx],
       }),
+    voteOnCommunity: (communityNumericId: number, choice: 1 | 2 | 3) =>
+      writeContractAsync({
+        address: a.governor,
+        abi: GOVERNOR_ABI,
+        functionName: "voteCommunity",
+        args: [BigInt(communityNumericId), choice],
+      }),
+    submitCommunity: (params: {
+      projectId: string;
+      title: string;
+      description: string;
+      votingEndUnixSec: bigint;
+      threshold: bigint;
+    }) =>
+      writeContractAsync({
+        address: a.governor,
+        abi: GOVERNOR_ABI,
+        functionName: "submitCommunityProposal",
+        args: [
+          projectKeyOf(params.projectId),
+          params.title,
+          params.description,
+          params.votingEndUnixSec,
+          params.threshold,
+        ],
+      }),
     finalizeProposal: (proposalNumericId: number) =>
       writeContractAsync({
         address: a.governor,
@@ -237,16 +337,24 @@ export function useGovernorActions() {
         functionName: "finalizeTask",
         args: [BigInt(taskNumericId)],
       }),
+    finalizeCommunity: (communityNumericId: number) =>
+      writeContractAsync({
+        address: a.governor,
+        abi: GOVERNOR_ABI,
+        functionName: "finalizeCommunityProposal",
+        args: [BigInt(communityNumericId)],
+      }),
   };
 }
 
-// ─────────────── on-chain decoders ───────────────
-//
-// The ABI defines named struct outputs, which viem decodes into objects with
-// stable keys. We rely on that shape; the previous "defensive" array branch
-// was dead code with unsafe casts and has been removed.
+/** keccak256 of a UTF-8 project id — matches the on-chain projectKey. */
+export function projectKeyOf(projectId: string): Hex {
+  return keccak256(toBytes(projectId));
+}
 
-const SCALE = 10n ** 18n; // weight is 18-decimal HIVE units
+// ─────────────── on-chain decoders ───────────────
+
+const SCALE = 10n ** 18n;
 
 type OnchainProposal = {
   title: string;
@@ -278,6 +386,22 @@ type OnchainTask = {
   decidedOption: number;
 };
 
+type OnchainCommunity = {
+  projectKey: `0x${string}`;
+  submitter: `0x${string}`;
+  title: string;
+  description: string;
+  votingStart: bigint;
+  votingEnd: bigint;
+  yes: bigint;
+  no: bigint;
+  abstain: bigint;
+  threshold: bigint;
+  participants: number;
+  status: number;
+  becameTaskId: bigint;
+};
+
 type OnchainOption = { label: string; description: string; votes: bigint };
 
 function decodeProposal(raw: unknown) {
@@ -304,6 +428,25 @@ function decodeTask(raw: unknown): OnchainTask {
   return raw as OnchainTask;
 }
 
+function decodeCommunityProposal(raw: unknown) {
+  const o = raw as OnchainCommunity;
+  return {
+    projectKey: o.projectKey,
+    submitter: o.submitter,
+    title: o.title,
+    description: o.description,
+    votingStart: Number(o.votingStart),
+    votingEnd: Number(o.votingEnd),
+    yes: o.yes,
+    no: o.no,
+    abstain: o.abstain,
+    threshold: o.threshold,
+    participants: Number(o.participants),
+    status: o.status,
+    becameTaskId: o.becameTaskId,
+  };
+}
+
 function decodeChoice(raw: unknown): "yes" | "no" | "abstain" | undefined {
   const n = Number(raw ?? 0);
   if (n === 1) return "yes";
@@ -327,6 +470,12 @@ function proposalStatusFor(s: number): Proposal["status"] {
 function taskStatusFor(s: number): Task["status"] {
   if (s === 1) return "DECIDED";
   if (s === 2) return "PENDING";
+  return "ACTIVE";
+}
+
+function communityStatusFor(s: number): CommunityProposal["status"] {
+  if (s === 1) return "PASSED";
+  if (s === 2) return "REJECTED";
   return "ACTIVE";
 }
 

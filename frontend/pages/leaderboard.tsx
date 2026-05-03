@@ -16,7 +16,7 @@ export default function Leaderboard() {
     // Placeholder leaderboard — until the subgraph is wired in we synthesize
     // a deterministic ladder from the live total weighted stake. Replace
     // with `useTopStakers()` (subgraph) when available.
-    const total = num(data.totalWeighted) || num(data.totalStaked) || 0;
+    const total = num(data.effectiveWeighted) || num(data.totalStaked) || 0;
     const seed = total > 0 ? total : 100_000;
     const list: Entry[] = Array.from({ length: 10 }, (_, i) => {
       const decay = Math.pow(0.78, i);
@@ -24,7 +24,7 @@ export default function Leaderboard() {
         rank: i + 1,
         address: synthAddress(i),
         staked: seed * decay * 0.18,
-        lock: i % 3 === 0 ? "7d" : i % 3 === 1 ? "3d" : "24h",
+        lock: "open",
       };
     });
     if (address && userStake > 0) {
@@ -32,14 +32,14 @@ export default function Leaderboard() {
         rank: 0,
         address,
         staked: userStake,
-        lock: data.lockDuration === 604800 ? "7d" : data.lockDuration === 259200 ? "3d" : "24h",
+        lock: "open",
       };
       list.push(myEntry);
       list.sort((a, b) => b.staked - a.staked);
       list.forEach((e, i) => (e.rank = i + 1));
     }
     return list.slice(0, 10);
-  }, [address, userStake, data.totalStaked, data.totalWeighted, data.lockDuration]);
+  }, [address, userStake, data.totalStaked]);
 
   return (
     <div className="pt-6 sm:pt-12">
@@ -125,7 +125,7 @@ function LeaderRow({
             )}
           </div>
           <div className="text-[10px] uppercase tracking-wider2 text-honey-soft/45">
-            {entry.lock} lock
+            staked
           </div>
         </div>
       </div>

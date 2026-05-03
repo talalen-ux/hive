@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 import { useAccount } from "wagmi";
 import { parseUnits } from "viem";
 import { motion } from "framer-motion";
-import { LockTierPicker } from "./LockTierPicker";
 import { useHiveActions, useHiveContext, useStakerData } from "@/hooks/useHiveStake";
 import { fmtToken } from "@/lib/format";
 
@@ -10,14 +9,18 @@ type Props = {
   onActivity?: (kind: "approving" | "staking" | "idle") => void;
 };
 
+/**
+ * Deposit-only "Enter the hive" card. No locks, no tiers — staking is just
+ * the entry ticket to participate. Withdrawal lives in PositionCard.
+ */
 export function StakeCard({ onActivity }: Props) {
   const { address } = useAccount();
   const { live } = useHiveContext();
   const data = useStakerData();
   const actions = useHiveActions();
   const [amount, setAmount] = useState("");
-  const [lock, setLock] = useState(24 * 60 * 60);
   const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const parsed = useMemo(() => {
     try { return amount ? parseUnits(amount, 18) : 0n; } catch { return 0n; }
@@ -27,16 +30,29 @@ export function StakeCard({ onActivity }: Props) {
 
   async function onApprove() {
     setBusy("approve");
+    setError(null);
     onActivity?.("approving");
-    try { await actions.approve(amount); await data.refetch(); } finally {
+    try {
+      await actions.approve(amount);
+      await data.refetch();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
       setBusy(null);
       onActivity?.("idle");
     }
   }
   async function onStake() {
     setBusy("stake");
+    setError(null);
     onActivity?.("staking");
-    try { await actions.stake(amount, lock); setAmount(""); await data.refetch(); } finally {
+    try {
+      await actions.stake(amount);
+      setAmount("");
+      await data.refetch();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
       setBusy(null);
       onActivity?.("idle");
     }
@@ -85,19 +101,12 @@ export function StakeCard({ onActivity }: Props) {
         </div>
       </div>
 
-      <div className="mt-6">
-        <label className="block text-[10px] uppercase tracking-wider2 text-honey-soft/50 mb-2">
-          Lock duration
-        </label>
-        <LockTierPicker value={lock} onChange={setLock} />
-      </div>
-
       <motion.button
         whileHover={{ y: -1 }}
         whileTap={{ scale: 0.98 }}
         disabled={!live || busy !== null || parsed === 0n}
         onClick={needsApproval ? onApprove : onStake}
-        className="mt-7 w-full rounded-full bg-gradient-to-br from-honey-soft to-honey px-6 py-3 text-[12px] font-medium tracking-wider2 uppercase text-ink shadow-honey hover:shadow-honeyStrong transition-all disabled:opacity-40 disabled:shadow-none"
+        className="mt-6 w-full rounded-full bg-gradient-to-br from-honey-soft to-honey px-6 py-3 text-[12px] font-medium tracking-wider2 uppercase text-ink shadow-honey hover:shadow-honeyStrong transition-all disabled:opacity-40 disabled:shadow-none"
       >
         {!live
           ? "Awaiting deployment"
@@ -107,8 +116,15 @@ export function StakeCard({ onActivity }: Props) {
       </motion.button>
 
       <p className="mt-4 text-[11px] text-honey-soft/40 text-center">
-        Longer locks earn deeper share. Early exit forfeits pending nectar.
+        Stake is your entry ticket — vote, propose, exit anytime. Rewards land
+        when projects launch.
       </p>
+
+      {error && (
+        <div className="mt-3 rounded-lg border border-red-400/30 bg-red-400/[0.04] px-3 py-2 text-[11px] text-red-300/80">
+          {error.length > 160 ? `${error.slice(0, 160)}…` : error}
+        </div>
+      )}
     </div>
   );
 }

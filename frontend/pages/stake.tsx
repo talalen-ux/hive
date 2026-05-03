@@ -1,20 +1,26 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
+import { formatUnits } from "viem";
 import { StakeCard } from "@/components/StakeCard";
 import { PositionCard } from "@/components/PositionCard";
 import { HiveChamber } from "@/components/HiveChamber";
 import { useStakerData } from "@/hooks/useHiveStake";
-import { useCountdown } from "@/hooks/useCountdown";
 
 export default function StakePage() {
   const data = useStakerData();
-  const remaining = useCountdown(data.lockEnd);
-  const total = Math.max(data.lockDuration, 1);
-  const elapsed = Math.max(0, total - remaining);
-  const progress = data.staked > 0n ? Math.min(1, elapsed / total) : 0;
+
+  // Chamber fill = staker's share of total stake (visual only). The
+  // animation pumps brighter while a stake tx is in flight.
+  const share = useMemo(() => {
+    if (data.staked === 0n) return 0;
+    const totalNum = Number(formatUnits(data.totalStaked, 18));
+    const mineNum = Number(formatUnits(data.staked, 18));
+    if (totalNum <= 0) return 0;
+    return Math.max(0.05, Math.min(1, mineNum / totalNum));
+  }, [data.staked, data.totalStaked]);
 
   const [activity, setActivity] = useState<"approving" | "staking" | "idle">("idle");
-  const fill = activity === "staking" ? Math.min(1, progress + 0.25) : progress;
+  const fill = activity === "staking" ? Math.min(1, share + 0.25) : share;
 
   return (
     <div className="pt-6 sm:pt-12">
@@ -26,7 +32,8 @@ export default function StakePage() {
           Enter the Hive
         </h1>
         <p className="mx-auto mt-4 max-w-md text-sm text-honey-soft/55">
-          Lock your $HIVE for 24h, 3d, or 7d. Deeper locks earn deeper share.
+          Stake any amount, unstake any time. Stake is your entry ticket —
+          vote on ideas, submit proposals, claim launch payouts.
         </p>
       </header>
 
@@ -50,7 +57,7 @@ export default function StakePage() {
           <HiveChamber fill={fill} active={activity !== "idle"} />
           <p className="mt-6 text-center text-[11px] uppercase tracking-wider2 text-honey-soft/45 numeric">
             {data.staked > 0n
-              ? `Chamber ${(progress * 100).toFixed(0)}% matured`
+              ? `Your share · ${(share * 100).toFixed(2)}%`
               : "Empty chamber — awaiting honey"}
           </p>
         </motion.div>

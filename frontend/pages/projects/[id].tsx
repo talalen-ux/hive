@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { useMemo } from "react";
 import { useIncubator } from "@/hooks/useIncubator";
 import { useProject } from "@/hooks/useProjects";
+import { projectKeyOf } from "@/hooks/useGovernor";
 import { PipelineProgress } from "@/components/incubator/PipelineProgress";
 import { TaskVote } from "@/components/incubator/TaskVote";
 import { SubmitProposalForm } from "@/components/incubator/SubmitProposalForm";
@@ -37,10 +38,15 @@ export default function ProjectDetail() {
     [projectTasks],
   );
 
-  // Community proposals for this project, sorted with active windows first
-  // (closest-closing first), then closed ones (most recent first).
+  // Community proposals for this project, sorted with active windows first.
+  // On-chain proposals carry projectKey = keccak256(FE-id); mock entries
+  // store the FE id directly. Match either form.
   const communityProposals = useMemo(() => {
-    const rows = state.communityProposals.filter((p) => p.projectId === id);
+    if (typeof id !== "string") return [];
+    const onchainKey = projectKeyOf(id).toLowerCase();
+    const rows = state.communityProposals.filter(
+      (p) => p.projectId === id || p.projectId.toLowerCase() === onchainKey,
+    );
     return rows.slice().sort((a, b) => {
       if (a.status === "ACTIVE" && b.status !== "ACTIVE") return -1;
       if (b.status === "ACTIVE" && a.status !== "ACTIVE") return 1;

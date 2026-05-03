@@ -12,70 +12,55 @@ interface IHiveRewards {
     function settle(address user) external;
     function commitWeight(address user) external;
     function notifyStakeChange(address user) external;
-    function forfeit(address user) external returns (uint256 hiveAmt, uint256 ethAmt);
     function claim(address user, address to) external returns (uint256 hiveAmt, uint256 ethAmt);
     function pendingHive(address user) external view returns (uint256);
     function pendingEth(address user) external view returns (uint256);
 }
 
-/// @title HiveStaking
-/// @notice Stake $HIVE with a short lockup (24h–7d) for a reward multiplier.
-///         Unstaking before the lock matures forfeits accrued rewards back to
-///         remaining stakers.
+/// @title HiveStaking (no-lock model)
+/// @notice Stake any amount of $HIVE, unstake any amount, any time. Stake is
+///         the entry ticket to participate in governance — votes and
+///         community proposals are gated on a positive stake at action time.
+///         There are no lock tiers, no early-exit forfeits, and no time-based
+///         multipliers. Voting power is `amount` 1:1.
 ///
-/// New in this revision (audit fixes — see docs/SECURITY.md):
-///  * Vote integrity: HiveGovernor can extend a per-user `voteFreezeUntil`
-///    that blocks `unstake` while at least one open vote exists. Stops the
-///    "vote-then-walk" attack where a user voted then unstaked principal
-///    (forfeiting only rewards) while their vote weight remained tallied.
-///  * Single `_unstake(address)` body shared by both overloads (collapsed
-///    duplicate logic — H-G3).
-///  * Custom errors throughout for gas + bytecode reduction.
-///  * `stakeWithPermit` swallows a benign permit revert and falls through to
-///    `_stake` if allowance is already sufficient.
+/// Rewards are not distributed continuously. The rewards contract advances
+/// its accumulator only when the multisig calls `distributeLaunchPool` —
+/// typically once a project hits its LAUNCH stage. See HiveRewards.sol.
+///
+/// Vote integrity: when HiveGovernor records a vote it extends the voter's
+/// `voteFreezeUntil`; `unstake` reverts while the freeze is active so the
+/// voter cannot cast a vote then exit principal in the same window. This
+/// closes the "vote and walk" attack without imposing a default lock.
 contract HiveStaking is Ownable2Step, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
-
-    uint256 public constant MIN_LOCK = 24 hours;
-    uint256 public constant MID_LOCK = 3 days;
-    uint256 public constant MAX_LOCK = 7 days;
-
-    uint256 public constant MULT_24H = 10_000;
-    uint256 public constant MULT_3D = 12_000;
-    uint256 public constant MULT_7D = 15_000;
 
     address public constant DEAD = 0x000000000000000000000000000000000000dEaD;
 
     IERC20 public immutable hive;
     IHiveRewards public rewards;
-    /// @notice The HiveGovernor — set once, the only address allowed to extend
-    ///         per-user vote freezes. Can stay zero in tests / deployments
-    ///         that don't use the governor; vote freezes simply never fire.
+    /// @notice The HiveGovernor — set once. Only it may extend per-user vote
+    ///         freezes. May stay zero in tests / deployments without governor.
     address public governor;
 
     struct Stake {
         uint128 amount;
-        uint64 lockEnd;
-        uint64 lockDuration;
+        uint64 firstStakeAt; // earliest unbroken stake — sandwich defense
     }
 
     mapping(address => Stake) public stakes;
 
     /// @notice Earliest unix timestamp at which `user` may unstake. Extended
-    ///         (never shortened) by HiveGovernor when the user casts a vote
-    ///         to ensure their voting weight remains fully collateralised
-    ///         until every open vote they cast has closed.
+    ///         (never shortened) by HiveGovernor on every vote so the
+    ///         voter's stake remains committed until each open vote closes.
     mapping(address => uint64) public voteFreezeUntil;
 
     uint256 public totalStaked;
-    uint256 public totalWeighted;
     bool public deadSeeded;
 
     error AmountZero();
     error AmountTooLarge();
-    error LockTooShort();
-    error LockTooLong();
-    error CannotShortenLock();
+    error InsufficientStake();
     error RewardsUnset();
     error RewardsAlreadySet();
     error GovernorAlreadySet();
@@ -86,11 +71,11 @@ contract HiveStaking is Ownable2Step, ReentrancyGuard, Pausable {
     error NotGovernor();
     error VoteFreezeActive(uint64 until);
 
-    event Staked(address indexed user, uint256 amount, uint256 lockDuration, uint256 lockEnd);
-    event Unstaked(address indexed user, uint256 amount, bool earnedRewards);
+    event Staked(address indexed user, uint256 amount, uint256 newAmount);
+    event Unstaked(address indexed user, uint256 amount, uint256 newAmount);
     event RewardsContractSet(address indexed rewards);
     event GovernorSet(address indexed governor);
-    event DeadWeightSeeded(uint256 amount, uint256 weight);
+    event DeadWeightSeeded(uint256 amount);
     event VoteFreezeExtended(address indexed user, uint64 until);
 
     constructor(address initialOwner, address _hive) Ownable(initialOwner) {
@@ -100,7 +85,6 @@ contract HiveStaking is Ownable2Step, ReentrancyGuard, Pausable {
 
     // ─────────────────────────── Admin ───────────────────────────
 
-    /// @notice One-shot wire-up of the rewards contract.
     function setRewards(address _rewards) external onlyOwner {
         if (address(rewards) != address(0)) revert RewardsAlreadySet();
         if (_rewards == address(0)) revert AddressZero();
@@ -108,9 +92,6 @@ contract HiveStaking is Ownable2Step, ReentrancyGuard, Pausable {
         emit RewardsContractSet(_rewards);
     }
 
-    /// @notice One-shot wire-up of the governor. Only the governor may extend
-    ///         `voteFreezeUntil`. Optional — if never set, freezes don't fire
-    ///         and the staking contract is functionally unchanged.
     function setGovernor(address _governor) external onlyOwner {
         if (governor != address(0)) revert GovernorAlreadySet();
         if (_governor == address(0)) revert AddressZero();
@@ -124,8 +105,7 @@ contract HiveStaking is Ownable2Step, ReentrancyGuard, Pausable {
     // ─────────────────────── Vote-integrity hook ───────────────────────
 
     /// @notice Called by HiveGovernor on every vote to extend the user's
-    ///         unstake-freeze window. Only ever moves forward — earlier
-    ///         freezes are no-ops.
+    ///         unstake-freeze window. Only ever moves forward.
     function freezeUntil(address user, uint64 until) external {
         if (msg.sender != governor) revert NotGovernor();
         if (until > voteFreezeUntil[user]) {
@@ -134,28 +114,32 @@ contract HiveStaking is Ownable2Step, ReentrancyGuard, Pausable {
         }
     }
 
-    // ─────────────────────────── Math ───────────────────────────
+    // ─────────────────────────── Views ───────────────────────────
 
-    function multiplierFor(uint256 lockDuration) public pure returns (uint256) {
-        if (lockDuration >= MAX_LOCK) return MULT_7D;
-        if (lockDuration >= MID_LOCK) return MULT_3D;
-        if (lockDuration >= MIN_LOCK) return MULT_24H;
-        revert LockTooShort();
-    }
-
+    /// @notice Voting weight = staked amount (1:1, no multipliers).
     function weightOf(address user) public view returns (uint256) {
-        return _weightOf(stakes[user]);
+        return stakes[user].amount;
     }
 
-    function _weightOf(Stake memory s) internal pure returns (uint256) {
-        if (s.amount == 0) return 0;
-        return (uint256(s.amount) * multiplierFor(s.lockDuration)) / 10_000;
+    function totalWeighted() external view returns (uint256) {
+        return totalStaked;
+    }
+
+    /// @notice Effective weighted stake — total minus the dead-seed floor.
+    ///         Use this for any user-facing TVL / weighted metric.
+    function effectiveWeighted() external view returns (uint256) {
+        uint256 deadAmount = stakes[DEAD].amount;
+        return totalStaked > deadAmount ? totalStaked - deadAmount : 0;
+    }
+
+    function firstStakeAt(address user) external view returns (uint64) {
+        return stakes[user].firstStakeAt;
     }
 
     // ─────────────────────────── Seed ───────────────────────────
 
-    /// @notice MINIMUM_LIQUIDITY-style seed. Pulls `amount` HIVE from the
-    ///         caller and registers a permanent stake to `DEAD`. Defeats the
+    /// @notice MINIMUM_LIQUIDITY-style seed. Pulls `amount` HIVE and
+    ///         registers a permanent stake to `DEAD`. Defeats the
     ///         first-staker donation sandwich on the rewards accumulator.
     function seedDeadWeight(uint256 amount) external onlyOwner {
         if (deadSeeded) revert AlreadySeeded();
@@ -168,30 +152,24 @@ contract HiveStaking is Ownable2Step, ReentrancyGuard, Pausable {
 
         Stake storage s = stakes[DEAD];
         s.amount = uint128(received);
-        s.lockEnd = type(uint64).max;
-        s.lockDuration = uint64(MAX_LOCK);
-        uint256 weight = (received * MULT_7D) / 10_000;
+        s.firstStakeAt = uint64(block.timestamp);
 
         totalStaked += received;
-        totalWeighted += weight;
-
         rewards.commitWeight(DEAD);
-        emit DeadWeightSeeded(received, weight);
+        emit DeadWeightSeeded(received);
     }
 
     // ─────────────────────────── Stake ───────────────────────────
 
-    function stake(uint256 amount, uint256 lockDuration) external nonReentrant whenNotPaused {
-        _stake(msg.sender, amount, lockDuration);
+    function stake(uint256 amount) external nonReentrant whenNotPaused {
+        _stake(msg.sender, amount);
     }
 
-    /// @notice Stake using an EIP-2612 permit signature in the same tx.
-    ///         If `permit` reverts but `allowance >= amount` already, the
-    ///         stake still proceeds (saves a tx when the user is already
-    ///         approved or someone front-runs the permit).
+    /// @notice Stake using an EIP-2612 permit signature in the same tx. If
+    ///         the permit reverts but allowance is already sufficient, falls
+    ///         through to the deposit (front-run / replay tolerant).
     function stakeWithPermit(
         uint256 amount,
-        uint256 lockDuration,
         uint256 deadline,
         uint8 v,
         bytes32 r,
@@ -200,154 +178,104 @@ contract HiveStaking is Ownable2Step, ReentrancyGuard, Pausable {
         try IERC20Permit(address(hive)).permit(msg.sender, address(this), amount, deadline, v, r, s_) {
             // ok
         } catch {
-            // permit failed (already approved / front-run / replay) — fall
-            // through if existing allowance can cover the stake.
-            if (hive.allowance(msg.sender, address(this)) < amount) {
-                revert(); // re-raise; safeTransferFrom would fail anyway
-            }
+            if (hive.allowance(msg.sender, address(this)) < amount) revert();
         }
-        _stake(msg.sender, amount, lockDuration);
+        _stake(msg.sender, amount);
     }
 
-    function _stake(address user, uint256 amount, uint256 lockDuration) internal {
+    function _stake(address user, uint256 amount) internal {
         if (amount == 0) revert AmountZero();
         if (amount > type(uint128).max) revert AmountTooLarge();
-        if (lockDuration > MAX_LOCK) revert LockTooLong();
         if (address(rewards) == address(0)) revert RewardsUnset();
         if (user == DEAD) revert DeadReserved();
 
-        // multiplierFor reverts with LockTooShort if < MIN_LOCK
-        multiplierFor(lockDuration);
+        Stake storage s = stakes[user];
 
-        Stake memory sMem = stakes[user];
-        uint256 oldWeight = _weightOf(sMem);
-
-        if (sMem.amount > 0) {
-            if (lockDuration < sMem.lockDuration && block.timestamp < sMem.lockEnd) {
-                revert CannotShortenLock();
-            }
-        }
-
+        // Settle pending under the OLD weight before mutating.
         rewards.settle(user);
 
         uint256 received = _pullHive(user, amount);
         if (received > type(uint128).max) revert AmountTooLarge();
+        if (uint256(s.amount) + received > type(uint128).max) revert AmountTooLarge();
 
-        uint128 newAmount = sMem.amount + uint128(received);
-        uint64 newEnd = uint64(block.timestamp + lockDuration);
-        if (newEnd < sMem.lockEnd) newEnd = sMem.lockEnd;
-
-        uint256 effective = newEnd - block.timestamp;
-        if (effective > MAX_LOCK) effective = MAX_LOCK;
-        uint256 mult = multiplierFor(effective);
-
-        Stake storage s = stakes[user];
-        s.amount = newAmount;
-        s.lockEnd = newEnd;
-        s.lockDuration = uint64(effective);
-
-        uint256 newWeight = (uint256(newAmount) * mult) / 10_000;
-
-        totalStaked += received;
-        // newWeight - oldWeight could underflow only if oldWeight > newWeight.
-        // newAmount > sMem.amount and effective tier >= old tier (we just
-        // checked CannotShortenLock), so newWeight >= oldWeight. Safe.
-        unchecked {
-            totalWeighted = totalWeighted + newWeight - oldWeight;
+        // Track the earliest *continuous* stake time. Topping up an
+        // existing position keeps the original stamp; a fresh stake after
+        // a full exit resets the clock.
+        if (s.amount == 0) {
+            s.firstStakeAt = uint64(block.timestamp);
         }
+        s.amount = uint128(uint256(s.amount) + received);
+        totalStaked += received;
 
         rewards.commitWeight(user);
-        emit Staked(user, received, effective, newEnd);
+        emit Staked(user, received, s.amount);
     }
 
     // ─────────────────────────── Unstake ───────────────────────────
 
-    /// @notice Unstake all. Before lock matures, rewards are forfeited.
-    ///         If `voteFreezeUntil[msg.sender] > now`, the call reverts —
-    ///         the user has open votes whose weight must remain committed.
-    /// @param  ethRecipient  Where matured-claim ETH should be sent. Pass
-    ///                       address(0) to default to msg.sender.
-    function unstake(address ethRecipient) external nonReentrant {
-        _unstake(ethRecipient);
+    /// @notice Unstake any amount up to the staker's balance. Blocked while
+    ///         the user has open votes (vote-freeze active).
+    /// @param  amount  amount of HIVE to withdraw. Must be > 0 and ≤ stake.
+    function unstake(uint256 amount) external nonReentrant {
+        _unstake(msg.sender, amount);
     }
 
-    /// @notice ETH defaults to msg.sender.
-    function unstake() external nonReentrant {
-        _unstake(address(0));
+    /// @notice Convenience: unstake the entire balance.
+    function unstakeAll() external nonReentrant {
+        Stake memory s = stakes[msg.sender];
+        if (s.amount == 0) revert NoStake();
+        _unstake(msg.sender, s.amount);
     }
 
-    function _unstake(address ethRecipient) internal {
-        address user = msg.sender;
+    function _unstake(address user, uint256 amount) internal {
         if (user == DEAD) revert DeadReserved();
+        if (amount == 0) revert AmountZero();
 
         uint64 freezeUntilTs = voteFreezeUntil[user];
         if (freezeUntilTs > block.timestamp) revert VoteFreezeActive(freezeUntilTs);
 
-        Stake memory s = stakes[user];
+        Stake storage s = stakes[user];
         if (s.amount == 0) revert NoStake();
-
-        bool earned = block.timestamp >= s.lockEnd;
-        uint256 weight = _weightOf(s);
+        if (amount > s.amount) revert InsufficientStake();
 
         // Settle pending under the OLD weight first.
         rewards.settle(user);
 
-        // Remove weight FIRST so forfeit redistributes only across remaining
-        // stakers with no dilution wasted on the leaver.
-        delete stakes[user];
-        // Both subs are safe by invariant: this user's amount/weight were
-        // previously added to these totals.
+        // Decrease balance in storage. Both subs are safe by invariant.
         unchecked {
-            totalStaked -= s.amount;
-            totalWeighted -= weight;
+            s.amount = uint128(uint256(s.amount) - amount);
+            totalStaked -= amount;
         }
-
-        if (earned) {
-            address to = ethRecipient == address(0) ? user : ethRecipient;
-            rewards.claim(user, to);
-        } else {
-            rewards.forfeit(user);
+        if (s.amount == 0) {
+            s.firstStakeAt = 0; // reset clock — next stake starts fresh
         }
 
         rewards.commitWeight(user);
-        hive.safeTransfer(user, s.amount);
-        emit Unstaked(user, s.amount, earned);
+        hive.safeTransfer(user, amount);
+        emit Unstaked(user, amount, s.amount);
     }
 
-    /// @notice Claim accrued rewards without unstaking. Only callable after
-    ///         the lock matures.
+    /// @notice Claim accrued rewards without unstaking. Always callable for
+    ///         a positive stake — rewards only ever accrue when the
+    ///         multisig calls HiveRewards.distributeLaunchPool, so there's
+    ///         no continuous yield to time.
     function claim(address to) external nonReentrant whenNotPaused returns (uint256 hiveAmt, uint256 ethAmt) {
         if (msg.sender == DEAD) revert DeadReserved();
-        Stake memory s = stakes[msg.sender];
-        if (s.amount == 0) revert NoStake();
-        if (block.timestamp < s.lockEnd) revert LockTooShort();
+        if (stakes[msg.sender].amount == 0) revert NoStake();
         rewards.notifyStakeChange(msg.sender);
         return rewards.claim(msg.sender, to == address(0) ? msg.sender : to);
     }
 
-    // ─────────────────────────── Views ───────────────────────────
-
     function pendingHive(address user) external view returns (uint256) {
-        if (stakes[user].lockEnd > block.timestamp) return 0;
         return rewards.pendingHive(user);
     }
 
     function pendingEth(address user) external view returns (uint256) {
-        if (stakes[user].lockEnd > block.timestamp) return 0;
         return rewards.pendingEth(user);
-    }
-
-    /// @notice Effective weighted stake — `totalWeighted` minus the dead-seed
-    ///         floor. This is what the UI should show for "weighted stake"
-    ///         metrics so the burn floor doesn't pollute live numbers.
-    function effectiveWeighted() external view returns (uint256) {
-        uint256 deadW = _weightOf(stakes[DEAD]);
-        return totalWeighted > deadW ? totalWeighted - deadW : 0;
     }
 
     // ─────────────────────────── Internal ───────────────────────────
 
-    /// @dev Pulls HIVE from `from` and returns the actual received delta.
     function _pullHive(address from, uint256 amount) internal returns (uint256) {
         uint256 before = hive.balanceOf(address(this));
         hive.safeTransferFrom(from, address(this), amount);

@@ -7,39 +7,27 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
 interface IHiveStakingGov {
     function weightOf(address user) external view returns (uint256);
-    function stakes(address user)
-        external
-        view
-        returns (uint128 amount, uint64 lockEnd, uint64 lockDuration);
     function totalWeighted() external view returns (uint256);
     function freezeUntil(address user, uint64 until) external;
 }
 
-/// @title HiveGovernor
-/// @notice On-chain governance for the Hive Incubator. Two artefacts:
-///         * Proposals — yes/no/abstain votes on AI-generated startup ideas.
-///         * Tasks — A/B/C votes on milestone decisions for live projects.
+/// @title HiveGovernor (no-lock model)
+/// @notice On-chain governance for the Hive Incubator. Three artefacts:
+///         * Idea proposals — yes/no/abstain on AI-generated startup ideas
+///           (oracle-only creation).
+///         * Community proposals — yes/no/abstain on staker-submitted
+///           project proposals. Anyone with `weightOf(msg.sender) >=
+///           minProposeStake` can submit.
+///         * Tasks — A/B/C votes on milestone decisions for live projects
+///           (oracle-only creation).
 ///
-/// Voting power is the staker's `weightOf` at vote-cast time. To defeat
-/// flash-borrow attacks AND keep voting weight collateralised through the
-/// vote, voters must satisfy `stakes(user).lockEnd >= votingEnd`, AND each
-/// vote calls `staking.freezeUntil(voter, votingEnd)` to block the staker
-/// from unstaking before the latest open vote they cast has closed. This
-/// closes the "vote then walk with principal, forfeit only rewards" attack
-/// (audit H-G1).
+/// Voting power: stake at vote-cast time (no time multiplier in the no-lock
+/// model). To stop "vote then unstake principal" the governor calls
+/// `staking.freezeUntil(voter, votingEnd)` on every vote — the staking
+/// contract refuses unstakes while the freeze is active.
 ///
-/// Audit fixes in this revision:
-///  * Vote freeze (H-G1).
-///  * Threshold defaults removed — oracle MUST pass an explicit threshold
-///    (H-G2).
-///  * String length bounds on every free-form field (M-G3).
-///  * Duplicate option labels rejected (M-G4).
-///  * Tie in `finalizeTask` => REJECTED instead of leftmost-wins (M-G2 task).
-///  * Two-step oracle rotation: pendingOracle + acceptOracle, with a min
-///    delay (M-G5).
-///  * Storage packing: numeric trailers consolidated into 3 slots on
-///    Proposal, 2 slots on Task.
-///  * Custom errors throughout.
+/// Pass criteria mirror the prior model: 60% YES of (yes+no) + quorum
+/// for proposals; 55% leader of all task votes for tasks; ties → REJECTED.
 contract HiveGovernor is Ownable2Step, Pausable {
     uint64 public constant VOTING_WINDOW_MIN = 1 days;
     uint64 public constant VOTING_WINDOW_MAX = 7 days;
@@ -57,10 +45,9 @@ contract HiveGovernor is Ownable2Step, Pausable {
     uint8 public constant VOTE_ABSTAIN = 3;
 
     uint8 public constant STATUS_ACTIVE = 0;
-    uint8 public constant STATUS_PASSED = 1; // tasks: DECIDED
+    uint8 public constant STATUS_PASSED = 1;
     uint8 public constant STATUS_REJECTED = 2;
 
-    /// @notice Field length caps. Bytes (UTF-8 encoded), not glyph counts.
     uint16 public constant MAX_TITLE_LEN = 80;
     uint16 public constant MAX_DESCRIPTION_LEN = 1024;
     uint16 public constant MAX_CATEGORY_LEN = 32;
@@ -68,9 +55,6 @@ contract HiveGovernor is Ownable2Step, Pausable {
     uint16 public constant MAX_OPTION_LABEL_LEN = 64;
     uint16 public constant MAX_OPTION_DESC_LEN = 256;
 
-    /// @notice Cooldown a pending oracle rotation must serve before the new
-    ///         oracle can be accepted. Gives the security multisig time to
-    ///         react to a compromise.
     uint64 public constant ORACLE_ROTATION_DELAY = 24 hours;
 
     IHiveStakingGov public immutable staking;
@@ -78,22 +62,20 @@ contract HiveGovernor is Ownable2Step, Pausable {
     address public pendingOracle;
     uint64 public pendingOracleEffectiveAt;
 
-    /// @dev `string` fields each occupy a fixed slot (pointer to the dyn
-    ///      array); fixed-width trailers are packed into the slots after.
+    /// @notice Minimum staked weight required to submit a community
+    ///         proposal. Anti-spam — the multisig tunes via setMinProposeStake.
+    uint128 public minProposeStake;
+
     struct Proposal {
-        // dynamic fields — one slot pointer each
         string title;
         string description;
         string category;
         string buildTime;
-        // packed slot A: [votingStart u64 | votingEnd u64 | yes u128]  (256 bits)
         uint64 votingStart;
         uint64 votingEnd;
         uint128 yes;
-        // packed slot B: [no u128 | abstain u128]
         uint128 no;
         uint128 abstain;
-        // packed slot C: [threshold u128 | participants u32 | complexity u8 | marketPotential u8 | status u8]
         uint128 threshold;
         uint32 participants;
         uint8 complexity;
@@ -101,14 +83,28 @@ contract HiveGovernor is Ownable2Step, Pausable {
         uint8 status;
     }
 
+    struct CommunityProposal {
+        bytes32 projectKey;
+        address submitter;
+        string title;
+        string description;
+        uint64 votingStart;
+        uint64 votingEnd;
+        uint128 yes;
+        uint128 no;
+        uint128 abstain;
+        uint128 threshold;
+        uint32 participants;
+        uint8 status;
+        uint256 becameTaskId; // 0 = none
+    }
+
     struct Task {
-        bytes32 projectKey; // 1 slot
-        string description; // 1 slot pointer
-        // packed slot: [votingStart u64 | votingEnd u64 | threshold u128]
+        bytes32 projectKey;
+        string description;
         uint64 votingStart;
         uint64 votingEnd;
         uint128 threshold;
-        // packed slot: [totalVotes u128 | stage u8 | optionCount u8 | status u8 | decidedOption u8]
         uint128 totalVotes;
         uint8 stage;
         uint8 optionCount;
@@ -122,8 +118,6 @@ contract HiveGovernor is Ownable2Step, Pausable {
         uint128 votes;
     }
 
-    /// @notice Input shape for createTask — kept compact and lets us store
-    ///         options under a nested mapping.
     struct OptionInput {
         string label;
         string description;
@@ -131,14 +125,17 @@ contract HiveGovernor is Ownable2Step, Pausable {
 
     uint256 public proposalCount;
     uint256 public taskCount;
+    uint256 public communityProposalCount;
 
     mapping(uint256 => Proposal) public proposals;
     mapping(uint256 => mapping(address => uint8)) public proposalVotes;
 
     mapping(uint256 => Task) public tasks;
     mapping(uint256 => mapping(uint8 => TaskOption)) internal _taskOptions;
-    /// @dev option index is 1-based (0 = "did not vote").
     mapping(uint256 => mapping(address => uint8)) public taskVotes;
+
+    mapping(uint256 => CommunityProposal) public communityProposals;
+    mapping(uint256 => mapping(address => uint8)) public communityVotes;
 
     error NotOracle();
     error AddressZero();
@@ -163,6 +160,7 @@ contract HiveGovernor is Ownable2Step, Pausable {
     error ProjectKeyZero();
     error NoSuchProposal();
     error NoSuchTask();
+    error NoSuchCommunity();
     error NotActive();
     error VotingClosed();
     error VotingStillOpen();
@@ -173,10 +171,12 @@ contract HiveGovernor is Ownable2Step, Pausable {
     error WeightTooLarge();
     error NoPendingRotation();
     error RotationCooldown(uint64 effectiveAt);
+    error InsufficientStakeToPropose(uint256 have, uint256 need);
 
     event OracleSet(address indexed oldOracle, address indexed newOracle);
     event OracleRotationProposed(address indexed pending, uint64 effectiveAt);
     event OracleRotationCancelled(address indexed pending);
+    event MinProposeStakeSet(uint128 newValue);
     event ProposalCreated(uint256 indexed id, string title, uint64 votingEnd, uint128 threshold);
     event ProposalVoted(uint256 indexed id, address indexed voter, uint8 choice, uint256 weight);
     event ProposalFinalized(uint256 indexed id, uint8 status);
@@ -189,25 +189,37 @@ contract HiveGovernor is Ownable2Step, Pausable {
     );
     event TaskVoted(uint256 indexed id, address indexed voter, uint8 option, uint256 weight);
     event TaskFinalized(uint256 indexed id, uint8 status, uint8 decidedOption);
+    event CommunityProposalSubmitted(
+        uint256 indexed id,
+        bytes32 indexed projectKey,
+        address indexed submitter,
+        string title,
+        uint64 votingEnd
+    );
+    event CommunityProposalVoted(uint256 indexed id, address indexed voter, uint8 choice, uint256 weight);
+    event CommunityProposalFinalized(uint256 indexed id, uint8 status, uint256 becameTaskId);
 
     modifier onlyOracle() {
         if (msg.sender != oracle) revert NotOracle();
         _;
     }
 
-    constructor(address initialOwner, address _staking, address _oracle) Ownable(initialOwner) {
+    constructor(
+        address initialOwner,
+        address _staking,
+        address _oracle,
+        uint128 _minProposeStake
+    ) Ownable(initialOwner) {
         if (_staking == address(0) || _oracle == address(0)) revert AddressZero();
         staking = IHiveStakingGov(_staking);
         oracle = _oracle;
+        minProposeStake = _minProposeStake;
         emit OracleSet(address(0), _oracle);
+        emit MinProposeStakeSet(_minProposeStake);
     }
 
-    // ─────────────────────── Admin: oracle rotation ───────────────────────
+    // ─────────────────────── Admin ───────────────────────
 
-    /// @notice Begin a 24h two-step oracle rotation. The new oracle gains
-    ///         access only after `ORACLE_ROTATION_DELAY` and an explicit
-    ///         `acceptOracleRotation` call. Cancellable via `setOracleNow`
-    ///         with the same target (re-proposal) or by the multisig.
     function proposeOracle(address _oracle) external onlyOwner {
         if (_oracle == address(0)) revert AddressZero();
         pendingOracle = _oracle;
@@ -215,7 +227,6 @@ contract HiveGovernor is Ownable2Step, Pausable {
         emit OracleRotationProposed(_oracle, pendingOracleEffectiveAt);
     }
 
-    /// @notice Finalise the oracle rotation after the cooldown.
     function acceptOracleRotation() external onlyOwner {
         if (pendingOracle == address(0)) revert NoPendingRotation();
         if (block.timestamp < pendingOracleEffectiveAt) {
@@ -228,7 +239,6 @@ contract HiveGovernor is Ownable2Step, Pausable {
         emit OracleSet(old, oracle);
     }
 
-    /// @notice Abort a pending rotation (e.g. multisig changed its mind).
     function cancelOracleRotation() external onlyOwner {
         if (pendingOracle == address(0)) revert NoPendingRotation();
         address abandoned = pendingOracle;
@@ -237,10 +247,15 @@ contract HiveGovernor is Ownable2Step, Pausable {
         emit OracleRotationCancelled(abandoned);
     }
 
+    function setMinProposeStake(uint128 v) external onlyOwner {
+        minProposeStake = v;
+        emit MinProposeStakeSet(v);
+    }
+
     function pause() external onlyOwner { _pause(); }
     function unpause() external onlyOwner { _unpause(); }
 
-    // ─────────────────────────── Proposals ───────────────────────────
+    // ─────────────────────── Idea proposals (oracle) ───────────────────────
 
     function createProposal(
         string calldata title,
@@ -255,13 +270,8 @@ contract HiveGovernor is Ownable2Step, Pausable {
         _checkWindow(votingEnd);
         if (threshold == 0) revert ThresholdRequired();
         if (complexity > 10 || marketPotential > 10) revert BadScore();
-
-        uint256 titleLen = bytes(title).length;
-        if (titleLen == 0) revert TitleEmpty();
-        if (titleLen > MAX_TITLE_LEN) revert TitleTooLong();
-        uint256 descLen = bytes(description).length;
-        if (descLen == 0) revert DescriptionEmpty();
-        if (descLen > MAX_DESCRIPTION_LEN) revert DescriptionTooLong();
+        _checkTitle(title);
+        _checkDescription(description);
         if (bytes(category).length > MAX_CATEGORY_LEN) revert CategoryTooLong();
         if (bytes(buildTime).length > MAX_BUILD_TIME_LEN) revert BuildTimeTooLong();
 
@@ -276,8 +286,6 @@ contract HiveGovernor is Ownable2Step, Pausable {
         p.votingStart = uint64(block.timestamp);
         p.votingEnd = votingEnd;
         p.threshold = threshold;
-        // status / yes / no / abstain / participants default to 0
-
         emit ProposalCreated(id, title, votingEnd, threshold);
     }
 
@@ -290,7 +298,7 @@ contract HiveGovernor is Ownable2Step, Pausable {
         if (block.timestamp >= vEnd) revert VotingClosed();
         if (proposalVotes[id][msg.sender] != VOTE_NONE) revert AlreadyVoted();
 
-        uint256 w = _eligibleWeight(msg.sender, vEnd);
+        uint256 w = staking.weightOf(msg.sender);
         if (w == 0) revert NoWeight();
         if (w > type(uint128).max) revert WeightTooLarge();
 
@@ -298,16 +306,9 @@ contract HiveGovernor is Ownable2Step, Pausable {
         if (choice == VOTE_YES) p.yes += uint128(w);
         else if (choice == VOTE_NO) p.no += uint128(w);
         else p.abstain += uint128(w);
-        // participants overflow: realistically impossible at uint32 (4.29B).
-        // Keeping checked is ~30 gas; cheap insurance vs silent wrap.
         p.participants += 1;
 
-        // Freeze the voter's stake until the vote closes so they can't
-        // unstake-and-walk while their tally still counts. Best-effort:
-        // if the staking contract is in a deploy/wire-up mode without a
-        // governor set, this reverts with `NotGovernor` — surface upward.
         staking.freezeUntil(msg.sender, vEnd);
-
         emit ProposalVoted(id, msg.sender, choice, w);
     }
 
@@ -317,29 +318,105 @@ contract HiveGovernor is Ownable2Step, Pausable {
         if (p.status != STATUS_ACTIVE) revert NotActive();
         if (block.timestamp < p.votingEnd) revert VotingStillOpen();
 
-        uint256 yes = p.yes;
-        uint256 no = p.no;
-        uint256 abstain = p.abstain;
-        uint256 total = yes + no + abstain;
-
-        uint8 result;
-        if (total < p.threshold) {
-            result = STATUS_REJECTED;
-        } else {
-            // Pass ratio uses YES + NO only; ABSTAIN counts toward quorum
-            // but not toward the pass margin.
-            uint256 binary = yes + no;
-            if (binary > 0 && (yes * BPS) / binary >= PROPOSAL_PASS_BPS) {
-                result = STATUS_PASSED;
-            } else {
-                result = STATUS_REJECTED;
-            }
-        }
-        p.status = result;
-        emit ProposalFinalized(id, result);
+        p.status = _evaluatePass(p.yes, p.no, p.abstain, p.threshold)
+            ? STATUS_PASSED
+            : STATUS_REJECTED;
+        emit ProposalFinalized(id, p.status);
     }
 
-    // ─────────────────────────── Tasks ───────────────────────────
+    // ─────────────────────── Community proposals (stakers) ───────────────────────
+
+    function submitCommunityProposal(
+        bytes32 projectKey,
+        string calldata title,
+        string calldata description,
+        uint64 votingEnd,
+        uint128 threshold
+    ) external whenNotPaused returns (uint256 id) {
+        // Anti-spam: caller must hold at least `minProposeStake`.
+        uint256 stakeAmt = staking.weightOf(msg.sender);
+        if (stakeAmt < minProposeStake) {
+            revert InsufficientStakeToPropose(stakeAmt, minProposeStake);
+        }
+
+        _checkWindow(votingEnd);
+        if (threshold == 0) revert ThresholdRequired();
+        if (projectKey == bytes32(0)) revert ProjectKeyZero();
+        _checkTitle(title);
+        _checkDescription(description);
+
+        unchecked { id = ++communityProposalCount; }
+        CommunityProposal storage c = communityProposals[id];
+        c.projectKey = projectKey;
+        c.submitter = msg.sender;
+        c.title = title;
+        c.description = description;
+        c.votingStart = uint64(block.timestamp);
+        c.votingEnd = votingEnd;
+        c.threshold = threshold;
+        emit CommunityProposalSubmitted(id, projectKey, msg.sender, title, votingEnd);
+    }
+
+    function voteCommunity(uint256 id, uint8 choice) external whenNotPaused {
+        if (choice == 0 || choice > VOTE_ABSTAIN) revert BadChoice();
+        CommunityProposal storage c = communityProposals[id];
+        uint64 vEnd = c.votingEnd;
+        if (vEnd == 0) revert NoSuchCommunity();
+        if (c.status != STATUS_ACTIVE) revert NotActive();
+        if (block.timestamp >= vEnd) revert VotingClosed();
+        if (communityVotes[id][msg.sender] != VOTE_NONE) revert AlreadyVoted();
+
+        uint256 w = staking.weightOf(msg.sender);
+        if (w == 0) revert NoWeight();
+        if (w > type(uint128).max) revert WeightTooLarge();
+
+        communityVotes[id][msg.sender] = choice;
+        if (choice == VOTE_YES) c.yes += uint128(w);
+        else if (choice == VOTE_NO) c.no += uint128(w);
+        else c.abstain += uint128(w);
+        c.participants += 1;
+
+        staking.freezeUntil(msg.sender, vEnd);
+        emit CommunityProposalVoted(id, msg.sender, choice, w);
+    }
+
+    /// @notice Finalise a community proposal after its window closes. On
+    ///         pass, auto-creates a task on the project (status PASSED,
+    ///         no options — the action item IS the description).
+    function finalizeCommunityProposal(uint256 id) external {
+        CommunityProposal storage c = communityProposals[id];
+        if (c.votingEnd == 0) revert NoSuchCommunity();
+        if (c.status != STATUS_ACTIVE) revert NotActive();
+        if (block.timestamp < c.votingEnd) revert VotingStillOpen();
+
+        bool passed = _evaluatePass(c.yes, c.no, c.abstain, c.threshold);
+        if (passed) {
+            c.status = STATUS_PASSED;
+            uint256 newTaskId;
+            unchecked { newTaskId = ++taskCount; }
+            Task storage t = tasks[newTaskId];
+            t.projectKey = c.projectKey;
+            t.description = c.title;
+            t.votingStart = uint64(block.timestamp);
+            t.votingEnd = uint64(block.timestamp);
+            // Already decided — no live vote, no options.
+            t.threshold = 0;
+            t.totalVotes = 0;
+            t.stage = 0;
+            t.optionCount = 0;
+            t.status = STATUS_PASSED;
+            t.decidedOption = 0;
+            c.becameTaskId = newTaskId;
+            emit TaskCreated(newTaskId, c.projectKey, 0, 0, uint64(block.timestamp));
+            emit TaskFinalized(newTaskId, STATUS_PASSED, 0);
+            emit CommunityProposalFinalized(id, STATUS_PASSED, newTaskId);
+        } else {
+            c.status = STATUS_REJECTED;
+            emit CommunityProposalFinalized(id, STATUS_REJECTED, 0);
+        }
+    }
+
+    // ─────────────────────── Tasks (oracle) ───────────────────────
 
     function createTask(
         bytes32 projectKey,
@@ -357,10 +434,7 @@ contract HiveGovernor is Ownable2Step, Pausable {
         uint256 n = options.length;
         if (n < 2) revert TooFewOptions();
         if (n > MAX_OPTIONS) revert TooManyOptions();
-
-        uint256 descLen = bytes(description).length;
-        if (descLen == 0) revert DescriptionEmpty();
-        if (descLen > MAX_DESCRIPTION_LEN) revert DescriptionTooLong();
+        _checkDescription(description);
 
         unchecked { id = ++taskCount; }
         Task storage t = tasks[id];
@@ -372,7 +446,6 @@ contract HiveGovernor is Ownable2Step, Pausable {
         t.threshold = threshold;
         t.optionCount = uint8(n);
 
-        // O(n²) duplicate-label check; n ≤ 5.
         for (uint256 i = 0; i < n; ) {
             string calldata label = options[i].label;
             string calldata desc = options[i].description;
@@ -387,7 +460,6 @@ contract HiveGovernor is Ownable2Step, Pausable {
                 unchecked { ++j; }
             }
 
-            // store at 1-based index (see taskVotes mapping).
             _taskOptions[id][uint8(i + 1)] = TaskOption({
                 label: label,
                 description: desc,
@@ -395,7 +467,6 @@ contract HiveGovernor is Ownable2Step, Pausable {
             });
             unchecked { ++i; }
         }
-
         emit TaskCreated(id, projectKey, stage, uint8(n), votingEnd);
     }
 
@@ -408,7 +479,7 @@ contract HiveGovernor is Ownable2Step, Pausable {
         if (option == 0 || option > t.optionCount) revert BadOption();
         if (taskVotes[id][msg.sender] != 0) revert AlreadyVoted();
 
-        uint256 w = _eligibleWeight(msg.sender, vEnd);
+        uint256 w = staking.weightOf(msg.sender);
         if (w == 0) revert NoWeight();
         if (w > type(uint128).max) revert WeightTooLarge();
 
@@ -417,7 +488,6 @@ contract HiveGovernor is Ownable2Step, Pausable {
         t.totalVotes += uint128(w);
 
         staking.freezeUntil(msg.sender, vEnd);
-
         emit TaskVoted(id, msg.sender, option, w);
     }
 
@@ -433,7 +503,6 @@ contract HiveGovernor is Ownable2Step, Pausable {
             return;
         }
 
-        // find leader; track second-best to detect ties.
         uint8 leaderIdx = 0;
         uint128 leaderVotes = 0;
         uint128 runnerUpVotes = 0;
@@ -450,14 +519,11 @@ contract HiveGovernor is Ownable2Step, Pausable {
             unchecked { ++i; }
         }
 
-        // Tie at the top => no decision (audit M-G2 task).
         if (leaderIdx == 0 || leaderVotes == runnerUpVotes) {
             t.status = STATUS_REJECTED;
             emit TaskFinalized(id, STATUS_REJECTED, 0);
             return;
         }
-
-        // Leader must clear PASS_BPS of all task votes.
         if ((uint256(leaderVotes) * BPS) / t.totalVotes < TASK_PASS_BPS) {
             t.status = STATUS_REJECTED;
             emit TaskFinalized(id, STATUS_REJECTED, 0);
@@ -469,7 +535,7 @@ contract HiveGovernor is Ownable2Step, Pausable {
         emit TaskFinalized(id, STATUS_PASSED, leaderIdx);
     }
 
-    // ─────────────────────────── Views ───────────────────────────
+    // ─────────────────────── Views ───────────────────────
 
     function taskOption(uint256 id, uint8 option) external view returns (TaskOption memory) {
         if (option == 0 || option > tasks[id].optionCount) revert BadOption();
@@ -486,14 +552,15 @@ contract HiveGovernor is Ownable2Step, Pausable {
         }
     }
 
-    /// @notice The voting weight `user` would commit if they voted now on a
-    ///         proposal that ends at `endTime`. Returns 0 if the user lacks
-    ///         the lock-end commitment.
-    function eligibleWeight(address user, uint64 endTime) external view returns (uint256) {
-        return _eligibleWeight(user, endTime);
+    function eligibleWeight(address user) external view returns (uint256) {
+        return staking.weightOf(user);
     }
 
-    // ─────────────────────────── Internal ───────────────────────────
+    function canPropose(address user) external view returns (bool) {
+        return staking.weightOf(user) >= minProposeStake;
+    }
+
+    // ─────────────────────── Internal ───────────────────────
 
     function _checkWindow(uint64 votingEnd) internal view {
         if (votingEnd <= block.timestamp) revert WindowEndsInPast();
@@ -503,9 +570,28 @@ contract HiveGovernor is Ownable2Step, Pausable {
         if (window > VOTING_WINDOW_MAX) revert WindowTooLong();
     }
 
-    function _eligibleWeight(address user, uint64 endTime) internal view returns (uint256) {
-        (, uint64 lockEnd, ) = staking.stakes(user);
-        if (lockEnd < endTime) return 0;
-        return staking.weightOf(user);
+    function _checkTitle(string calldata title) internal pure {
+        uint256 n = bytes(title).length;
+        if (n == 0) revert TitleEmpty();
+        if (n > MAX_TITLE_LEN) revert TitleTooLong();
+    }
+
+    function _checkDescription(string calldata d) internal pure {
+        uint256 n = bytes(d).length;
+        if (n == 0) revert DescriptionEmpty();
+        if (n > MAX_DESCRIPTION_LEN) revert DescriptionTooLong();
+    }
+
+    function _evaluatePass(
+        uint128 yes,
+        uint128 no,
+        uint128 abstain,
+        uint128 threshold
+    ) internal pure returns (bool) {
+        uint256 total = uint256(yes) + no + abstain;
+        if (total < threshold) return false;
+        uint256 binary = uint256(yes) + no;
+        if (binary == 0) return false;
+        return (uint256(yes) * BPS) / binary >= PROPOSAL_PASS_BPS;
     }
 }

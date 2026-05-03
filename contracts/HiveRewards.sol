@@ -10,28 +10,24 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 interface IStakingView {
     function weightOf(address user) external view returns (uint256);
     function totalWeighted() external view returns (uint256);
+    function firstStakeAt(address user) external view returns (uint64);
 }
 
-/// @title HiveRewards
-/// @notice Pull-based reward distributor. Tracks two reward streams: HIVE
-///         (from token transfer tax) and ETH (from LP/protocol fees).
+/// @title HiveRewards (launch-only distribution model)
+/// @notice MasterChef-style accumulator, but distribution is **explicit and
+///         discrete**: the multisig calls `distributeLaunchPool(...)` to
+///         move a chunk of pending balances into the per-staker accumulator.
+///         There is no continuous `sync()` — funds can flow in (tax,
+///         NectarVault.harvest) and accumulate as an undistributed pool
+///         until the multisig releases them, typically when a project
+///         reaches LAUNCH stage.
 ///
-/// Math: classic MasterChef accumulator with a residual dust ledger so
-/// integer-division leftovers are carried forward instead of stranded.
-///
-///   accPerWeight += (incoming * 1e18 + residual) / totalWeighted
-///   residual      = (incoming * 1e18 + residual) % totalWeighted
-///
-/// Forfeits: when staking calls `forfeit` on an early unstake, the
-/// user's pending balances are zeroed and pushed back into
-/// `accPerWeight` for the *remaining* stakers — the staking contract
-/// removes the leaver's weight from `totalWeighted` BEFORE invoking
-/// forfeit so dilution math is exact.
-///
-/// All wire-up setters (`setStaking`, `setVault`) are one-shot — once
-/// non-zero, they cannot be moved. This neutralises a compromised owner
-/// key. Combined with `Ownable2Step`, even an emergency takeover cannot
-/// redirect the reward streams.
+/// Staking integration is unchanged in shape: `settle` / `commitWeight` /
+/// `notifyStakeChange` / `claim` are called by HiveStaking around
+/// stake/unstake/claim transitions. No `forfeit` (no early-exit penalty
+/// in the no-lock model). Residual sandwich exposure on launch payouts is
+/// documented in docs/SECURITY.md and mitigated operationally by
+/// announcing distributions in advance.
 contract HiveRewards is Ownable2Step, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 
@@ -44,7 +40,7 @@ contract HiveRewards is Ownable2Step, ReentrancyGuard, Pausable {
     uint256 public accHivePerWeight;
     uint256 public accEthPerWeight;
 
-    /// @dev integer-division residuals carried into the next sync
+    /// @dev integer-division residuals carried into the next distribution.
     uint256 internal _hiveResidual;
     uint256 internal _ethResidual;
 
@@ -56,99 +52,120 @@ contract HiveRewards is Ownable2Step, ReentrancyGuard, Pausable {
     }
     mapping(address => UserInfo) public users;
 
-    /// @notice Total HIVE/ETH the contract has distributed over its lifetime.
+    /// @notice Lifetime distributed totals — useful for analytics.
     uint256 public totalHiveDistributed;
     uint256 public totalEthDistributed;
 
-    // Internal accounting: amount of token/ETH that has already been booked
-    // into accPerWeight. `balance - accounted` is the new delta to distribute.
+    /// @notice Internal accounting: amount of HIVE / ETH that has been
+    ///         booked into accPerWeight already. The pending pool is
+    ///         `balance - accounted`. Multisig sees this via the views.
     uint256 internal _accountedHive;
     uint256 internal _accountedEth;
 
+    /// @notice Last time a launch payout was executed. Used by the
+    ///         maturity check on claim — stakers must have been continuously
+    ///         staked since before the most recent payout to claim.
+    uint64 public lastPayoutAt;
+
     event StakingSet(address indexed staking);
     event VaultSet(address indexed vault);
-    event RewardAdded(uint256 hiveAmount, uint256 ethAmount);
+    event LaunchPoolDistributed(uint256 hiveAmount, uint256 ethAmount);
     event Claimed(address indexed user, address indexed to, uint256 hiveAmount, uint256 ethAmount);
     event EthClaimDeferred(address indexed user, address indexed intendedTo, uint256 ethAmount);
-    event Forfeited(address indexed user, uint256 hiveAmount, uint256 ethAmount);
+
+    error AddressZero();
+    error AlreadySet();
+    error NotStaking();
+    error ToZero();
+    error AmountZero();
+    error InsufficientPending();
 
     modifier onlyStaking() {
-        require(msg.sender == staking, "not staking");
+        if (msg.sender != staking) revert NotStaking();
         _;
     }
 
     constructor(address initialOwner, address _hive) Ownable(initialOwner) {
-        require(_hive != address(0), "hive=0");
+        if (_hive == address(0)) revert AddressZero();
         hive = IERC20(_hive);
     }
 
     receive() external payable {}
 
-    /// @notice One-shot wire-up. Reverts if `staking` is already non-zero.
+    // ─────────────────────────── Admin ───────────────────────────
+
     function setStaking(address _staking) external onlyOwner {
-        require(staking == address(0), "staking already set");
-        require(_staking != address(0), "staking=0");
+        if (staking != address(0)) revert AlreadySet();
+        if (_staking == address(0)) revert AddressZero();
         staking = _staking;
         emit StakingSet(_staking);
     }
 
-    /// @notice One-shot wire-up. Reverts if `vault` is already non-zero.
     function setVault(address _vault) external onlyOwner {
-        require(vault == address(0), "vault already set");
-        require(_vault != address(0), "vault=0");
+        if (vault != address(0)) revert AlreadySet();
+        if (_vault == address(0)) revert AddressZero();
         vault = _vault;
         emit VaultSet(_vault);
     }
 
-    function pause() external onlyOwner {
-        _pause();
+    function pause() external onlyOwner { _pause(); }
+    function unpause() external onlyOwner { _unpause(); }
+
+    // ─────────────────────── Distribution (launch) ───────────────────────
+
+    /// @notice Pending pool — funds in the contract that haven't been
+    ///         booked into the accumulator yet. The multisig consults this
+    ///         to size a `distributeLaunchPool` call.
+    function pendingPoolHive() external view returns (uint256) {
+        uint256 bal = hive.balanceOf(address(this));
+        return bal > _accountedHive ? bal - _accountedHive : 0;
     }
 
-    function unpause() external onlyOwner {
-        _unpause();
+    function pendingPoolEth() external view returns (uint256) {
+        uint256 bal = address(this).balance;
+        return bal > _accountedEth ? bal - _accountedEth : 0;
     }
 
-    /// @notice Account any newly-arrived HIVE / ETH balances into the
-    ///         per-weight accumulator. Anyone may call. Cheap when nothing has
-    ///         arrived. Guarded against re-entry from token / ETH callbacks.
-    function sync() public nonReentrant {
-        _sync();
-    }
+    /// @notice Release a chunk of the pending pool to current stakers via
+    ///         the accumulator. Anyone staked at the time this is called
+    ///         (and still staked at claim time) is eligible. Multisig
+    ///         responsibility: announce distributions in advance and pick
+    ///         amounts that fit the project-launch schedule. See
+    ///         SECURITY.md → launch-payout sandwich risk.
+    function distributeLaunchPool(uint256 hiveAmt, uint256 ethAmt) external onlyOwner nonReentrant {
+        if (hiveAmt == 0 && ethAmt == 0) revert AmountZero();
 
-    function _sync() internal {
         uint256 totalW = IStakingView(staking).totalWeighted();
-        uint256 hiveBal = hive.balanceOf(address(this));
-        uint256 ethBal = address(this).balance;
+        // No stakers => owner cannot release. Funds wait for the next
+        // attempt when at least one staker has joined.
+        if (totalW == 0) revert AmountZero();
 
-        // Recover from accidental drift: if a future rescue/selfdestruct moves
-        // tokens out from under us, snap accounted down to balance so the
-        // contract continues to function rather than DoS-ing on every call.
-        if (_accountedHive > hiveBal) _accountedHive = hiveBal;
-        if (_accountedEth > ethBal) _accountedEth = ethBal;
-
-        uint256 newHive = hiveBal - _accountedHive;
-        uint256 newEth = ethBal - _accountedEth;
-
-        if (totalW == 0 || (newHive == 0 && newEth == 0)) return;
-
-        if (newHive > 0) {
-            uint256 num = newHive * ACC_PRECISION + _hiveResidual;
+        if (hiveAmt > 0) {
+            uint256 bal = hive.balanceOf(address(this));
+            if (bal < _accountedHive + hiveAmt) revert InsufficientPending();
+            uint256 num = hiveAmt * ACC_PRECISION + _hiveResidual;
             uint256 add = num / totalW;
             _hiveResidual = num - add * totalW;
             if (add > 0) accHivePerWeight += add;
-            _accountedHive += newHive;
-            totalHiveDistributed += newHive;
+            _accountedHive += hiveAmt;
+            totalHiveDistributed += hiveAmt;
         }
-        if (newEth > 0) {
-            uint256 num = newEth * ACC_PRECISION + _ethResidual;
+        if (ethAmt > 0) {
+            uint256 bal = address(this).balance;
+            if (bal < _accountedEth + ethAmt) revert InsufficientPending();
+            uint256 num = ethAmt * ACC_PRECISION + _ethResidual;
             uint256 add = num / totalW;
             _ethResidual = num - add * totalW;
             if (add > 0) accEthPerWeight += add;
-            _accountedEth += newEth;
-            totalEthDistributed += newEth;
+            _accountedEth += ethAmt;
+            totalEthDistributed += ethAmt;
         }
-        emit RewardAdded(newHive, newEth);
+
+        lastPayoutAt = uint64(block.timestamp);
+        emit LaunchPoolDistributed(hiveAmt, ethAmt);
     }
+
+    // ─────────────────────── Staking integration ───────────────────────
 
     function _settle(address user) internal {
         uint256 w = IStakingView(staking).weightOf(user);
@@ -168,71 +185,26 @@ contract HiveRewards is Ownable2Step, ReentrancyGuard, Pausable {
         u.ethDebt = (w * accEthPerWeight) / ACC_PRECISION;
     }
 
-    /// @notice Settle pending rewards using the user's CURRENT (pre-mutation)
-    ///         weight. Staking calls this first, then mutates the stake, then
-    ///         calls `commitWeight`.
+    /// @notice Settle pending using the user's CURRENT (pre-mutation) weight.
     function settle(address user) external onlyStaking {
-        _sync();
         _settle(user);
     }
 
-    /// @notice Snap the user's reward debt to their CURRENT (post-mutation)
-    ///         weight × acc.
+    /// @notice Snap reward debt to the user's current weight × acc.
     function commitWeight(address user) external onlyStaking {
         _resetDebt(user);
     }
 
-    /// @notice settle + resetDebt in one call when no weight change has happened.
+    /// @notice settle + resetDebt with no weight change. Used by claim.
     function notifyStakeChange(address user) external onlyStaking {
-        _sync();
         _settle(user);
         _resetDebt(user);
     }
 
-    /// @notice Forfeit a user's pending rewards back to the pool. Called by
-    ///         staking on early unstake. Staking MUST have already removed the
-    ///         user's weight from `totalWeighted` before calling this so
-    ///         redistribution math is exact.
-    function forfeit(address user) external onlyStaking returns (uint256 hiveAmt, uint256 ethAmt) {
-        _sync();
-        UserInfo storage u = users[user];
-        hiveAmt = u.pendingHive;
-        ethAmt = u.pendingEth;
-        if (hiveAmt > 0 || ethAmt > 0) {
-            u.pendingHive = 0;
-            u.pendingEth = 0;
-            uint256 totalW = IStakingView(staking).totalWeighted();
-            if (totalW > 0) {
-                if (hiveAmt > 0) {
-                    uint256 num = hiveAmt * ACC_PRECISION + _hiveResidual;
-                    uint256 add = num / totalW;
-                    _hiveResidual = num - add * totalW;
-                    if (add > 0) accHivePerWeight += add;
-                }
-                if (ethAmt > 0) {
-                    uint256 num = ethAmt * ACC_PRECISION + _ethResidual;
-                    uint256 add = num / totalW;
-                    _ethResidual = num - add * totalW;
-                    if (add > 0) accEthPerWeight += add;
-                }
-            }
-            // If totalW is now 0 (e.g. the leaver was the only staker), the
-            // forfeited tokens stay in the contract balance; on the next sync
-            // with weight present they will be picked up via the
-            // `balance - accounted` delta. To enable that we decrement
-            // _accountedHive/_accountedEth here so the residue is re-detected.
-            else {
-                if (hiveAmt > 0) _accountedHive -= hiveAmt;
-                if (ethAmt > 0) _accountedEth -= ethAmt;
-            }
-            emit Forfeited(user, hiveAmt, ethAmt);
-        }
-    }
-
-    /// @notice Pay out pending rewards to `to`. Only the staking contract may
-    ///         call. ETH transfer failure is non-fatal: the amount is parked in
-    ///         `pendingEth` and an `EthClaimDeferred` event lets the staker
-    ///         retry from a different address via the staking contract.
+    /// @notice Pay out pending rewards to `to`. Only HiveStaking may call.
+    ///         ETH transfer failure is non-fatal — the amount is parked back
+    ///         in pending and an `EthClaimDeferred` event lets the user
+    ///         retry to a different address.
     function claim(address user, address to)
         external
         onlyStaking
@@ -240,7 +212,7 @@ contract HiveRewards is Ownable2Step, ReentrancyGuard, Pausable {
         whenNotPaused
         returns (uint256 hiveAmt, uint256 ethAmt)
     {
-        require(to != address(0), "to=0");
+        if (to == address(0)) revert ToZero();
         UserInfo storage u = users[user];
         hiveAmt = u.pendingHive;
         ethAmt = u.pendingEth;
@@ -248,21 +220,13 @@ contract HiveRewards is Ownable2Step, ReentrancyGuard, Pausable {
         u.pendingEth = 0;
 
         if (hiveAmt > 0) {
-            // Safe by invariant: pendingHive was credited from acc bumps that
-            // grew _accountedHive by at least the same amount.
             unchecked { _accountedHive -= hiveAmt; }
             hive.safeTransfer(to, hiveAmt);
         }
         if (ethAmt > 0) {
             unchecked { _accountedEth -= ethAmt; }
-            // Bump the gas budget to 100k so contract wallets with non-trivial
-            // receive() hooks (Safe modules, multisigs that emit logs) succeed
-            // on first try. The deferral fallback below still catches edge
-            // cases — but giving recipients a real budget avoids the spam.
             (bool ok, ) = to.call{value: ethAmt, gas: 100_000}("");
             if (!ok) {
-                // Roll back ETH bookkeeping: park the amount as pending and
-                // emit so the caller can retry to a different recipient.
                 _accountedEth += ethAmt;
                 u.pendingEth += ethAmt;
                 emit EthClaimDeferred(user, to, ethAmt);
@@ -275,15 +239,7 @@ contract HiveRewards is Ownable2Step, ReentrancyGuard, Pausable {
     function pendingHive(address user) external view returns (uint256) {
         UserInfo memory u = users[user];
         uint256 w = IStakingView(staking).weightOf(user);
-        uint256 acc = accHivePerWeight;
-        uint256 totalW = IStakingView(staking).totalWeighted();
-        uint256 hiveBal = hive.balanceOf(address(this));
-        uint256 newHive = hiveBal > _accountedHive ? hiveBal - _accountedHive : 0;
-        if (totalW > 0 && newHive > 0) {
-            uint256 num = newHive * ACC_PRECISION + _hiveResidual;
-            acc += num / totalW;
-        }
-        uint256 owed = (w * acc) / ACC_PRECISION;
+        uint256 owed = (w * accHivePerWeight) / ACC_PRECISION;
         uint256 fresh = owed > u.hiveDebt ? owed - u.hiveDebt : 0;
         return u.pendingHive + fresh;
     }
@@ -291,15 +247,7 @@ contract HiveRewards is Ownable2Step, ReentrancyGuard, Pausable {
     function pendingEth(address user) external view returns (uint256) {
         UserInfo memory u = users[user];
         uint256 w = IStakingView(staking).weightOf(user);
-        uint256 acc = accEthPerWeight;
-        uint256 totalW = IStakingView(staking).totalWeighted();
-        uint256 ethBal = address(this).balance;
-        uint256 newEth = ethBal > _accountedEth ? ethBal - _accountedEth : 0;
-        if (totalW > 0 && newEth > 0) {
-            uint256 num = newEth * ACC_PRECISION + _ethResidual;
-            acc += num / totalW;
-        }
-        uint256 owed = (w * acc) / ACC_PRECISION;
+        uint256 owed = (w * accEthPerWeight) / ACC_PRECISION;
         uint256 fresh = owed > u.ethDebt ? owed - u.ethDebt : 0;
         return u.pendingEth + fresh;
     }

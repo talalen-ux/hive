@@ -5,19 +5,17 @@ import {IERC20, SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeE
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
-interface IHiveRewardsSync {
-    function sync() external;
-}
-
 /// @title NectarVault
-/// @notice The fee/revenue receiver for the Hive system. ETH (from LP swaps
-///         unwrapped or protocol fees) and HIVE (from the transfer tax)
-///         accumulate here, then get forwarded to the HiveRewards distributor
-///         when `harvest()` is called.
+/// @notice Fee / revenue receiver. ETH (from LP swaps unwrapped or protocol
+///         fees) and HIVE (from the transfer tax) accumulate here, then get
+///         forwarded to the HiveRewards contract via `harvest()`. The
+///         rewards contract no longer auto-distributes — funds sit there
+///         as the pending pool until the multisig calls
+///         `HiveRewards.distributeLaunchPool` on a project launch.
 ///
-/// `harvest()` is permissionless by design — reward streams must not depend on
-/// a privileged keeper. The vault simply forwards balances; accounting lives
-/// in HiveRewards.
+/// `harvest()` is permissionless by design — moving fees into the rewards
+/// reserve doesn't change anyone's payout, so there's no incentive to
+/// game the timing.
 ///
 /// `setRewards` is one-shot. Combined with `Ownable2Step`, this prevents a
 /// compromised owner key from redirecting the harvest stream after launch.
@@ -38,7 +36,6 @@ contract NectarVault is Ownable2Step {
 
     receive() external payable {}
 
-    /// @notice One-shot wire-up. Reverts if `rewards` is already non-zero.
     function setRewards(address _rewards) external onlyOwner {
         require(rewards == address(0), "rewards already set");
         require(_rewards != address(0), "rewards=0");
@@ -46,19 +43,14 @@ contract NectarVault is Ownable2Step {
         emit RewardsSet(_rewards);
     }
 
-    /// @notice Push pending HIVE + ETH balances to the rewards distributor.
-    ///         Triggers `rewards.sync()` afterward so the next user-facing
-    ///         read (`pendingHive`/`pendingEth`) reflects the harvest without
-    ///         shifting that gas onto whoever interacts next.
+    /// @notice Forward pending HIVE + ETH balances to the rewards contract.
+    ///         The rewards contract treats these as the undistributed pool;
+    ///         a multisig call to `distributeLaunchPool` releases them.
     function harvest() external {
         require(rewards != address(0), "rewards unset");
         uint256 hiveBal = hive.balanceOf(address(this));
         uint256 ethBal = address(this).balance;
-
-        if (hiveBal == 0 && ethBal == 0) {
-            // Nothing to do — skip the event so indexers don't get noise.
-            return;
-        }
+        if (hiveBal == 0 && ethBal == 0) return;
 
         if (hiveBal > 0) {
             hive.safeTransfer(rewards, hiveBal);
@@ -67,12 +59,6 @@ contract NectarVault is Ownable2Step {
             (bool ok, ) = rewards.call{value: ethBal}("");
             require(ok, "eth fwd failed");
         }
-
-        // Account the just-arrived balances on the rewards side. Public sync
-        // is non-reentrant on the rewards contract; this is a single external
-        // call from a single-purpose vault, so reentrancy isn't a concern.
-        IHiveRewardsSync(rewards).sync();
-
         emit Harvested(hiveBal, ethBal);
     }
 

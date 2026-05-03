@@ -5,15 +5,14 @@ import { formatUnits } from "viem";
 import { CountUp } from "@/components/CountUp";
 import { NectarFlow } from "@/components/NectarFlow";
 import { useHiveActions, useStakerData } from "@/hooks/useHiveStake";
-import { useCountdown } from "@/hooks/useCountdown";
-import { fmtCountdown } from "@/lib/format";
 
 export default function RewardsPage() {
   const { address } = useAccount();
   const data = useStakerData();
   const actions = useHiveActions();
-  const remaining = useCountdown(data.lockEnd);
-  const unlocked = data.staked > 0n && remaining === 0;
+  // No more lock — anyone with a positive stake can claim whenever the
+  // multisig has released a launch payout into the accumulator.
+  const claimable = data.staked > 0n;
   const [busy, setBusy] = useState(false);
   const [burst, setBurst] = useState(false);
 
@@ -61,11 +60,11 @@ export default function RewardsPage() {
             <motion.button
               whileHover={{ y: -1 }}
               whileTap={{ scale: 0.97 }}
-              disabled={!unlocked || busy || (pendingHive === 0 && pendingEth === 0)}
+              disabled={!claimable || busy || (pendingHive === 0 && pendingEth === 0)}
               onClick={onClaim}
               className="relative inline-flex items-center gap-3 rounded-full bg-gradient-to-br from-honey-soft to-honey px-8 py-3 text-[12px] font-medium tracking-wider2 uppercase text-ink shadow-honey hover:shadow-honeyStrong transition-all disabled:opacity-40 disabled:shadow-none"
             >
-              {busy ? "Streaming…" : unlocked ? "Claim Nectar" : "Locked"}
+              {busy ? "Streaming…" : "Claim Nectar"}
               <span aria-hidden>↳</span>
 
               <AnimatePresence>
@@ -87,16 +86,16 @@ export default function RewardsPage() {
                 ? "Connect a wallet"
                 : data.staked === 0n
                 ? "No active stake"
-                : unlocked
-                ? "Ready to claim"
-                : `Unlocks in ${fmtCountdown(remaining)}`}
+                : pendingHive === 0 && pendingEth === 0
+                ? "Nothing to claim yet"
+                : "Ready to claim"}
             </div>
           </div>
         </div>
 
         <p className="mt-6 text-center text-[11px] text-honey-soft/40">
-          Nectar accrues continuously. Claim only after your lock matures —
-          early exit forfeits flow.
+          Nectar lands when projects launch. Stay staked through a launch and
+          your share is yours to claim — there's no lock to wait out.
         </p>
       </div>
     </div>

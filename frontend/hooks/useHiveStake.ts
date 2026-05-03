@@ -21,25 +21,23 @@ export function useStakerData() {
           { address: addresses.hive, abi: HIVE_TOKEN_ABI, functionName: "allowance", args: [address, addresses.staking] },
           { address: addresses.staking, abi: STAKING_ABI, functionName: "stakes", args: [address] },
           { address: addresses.staking, abi: STAKING_ABI, functionName: "totalStaked" },
-          { address: addresses.staking, abi: STAKING_ABI, functionName: "totalWeighted" },
           { address: addresses.staking, abi: STAKING_ABI, functionName: "effectiveWeighted" },
+          { address: addresses.staking, abi: STAKING_ABI, functionName: "voteFreezeUntil", args: [address] },
           { address: addresses.rewards, abi: REWARDS_ABI, functionName: "pendingHive", args: [address] },
           { address: addresses.rewards, abi: REWARDS_ABI, functionName: "pendingEth", args: [address] },
         ]
       : [],
   });
 
-  // viem returns multi-output getters as a struct: { amount, lockEnd, lockDuration }.
-  // Solidity public mappings of structs flatten the struct into named outputs in the ABI,
-  // and viem decodes named outputs as objects. We accept either shape defensively.
+  // The new `stakes(user)` getter returns { amount, firstStakeAt }.
   const rawStake = data?.[2]?.result as
-    | { amount: bigint; lockEnd: bigint; lockDuration: bigint }
-    | readonly [bigint, bigint, bigint]
+    | { amount: bigint; firstStakeAt: bigint }
+    | readonly [bigint, bigint]
     | undefined;
   const stake = rawStake
     ? Array.isArray(rawStake)
-      ? { amount: rawStake[0], lockEnd: rawStake[1], lockDuration: rawStake[2] }
-      : (rawStake as { amount: bigint; lockEnd: bigint; lockDuration: bigint })
+      ? { amount: rawStake[0], firstStakeAt: rawStake[1] }
+      : (rawStake as { amount: bigint; firstStakeAt: bigint })
     : undefined;
 
   return {
@@ -48,14 +46,14 @@ export function useStakerData() {
     balance: (data?.[0]?.result as bigint | undefined) ?? 0n,
     allowance: (data?.[1]?.result as bigint | undefined) ?? 0n,
     staked: stake?.amount ?? 0n,
-    lockEnd: Number(stake?.lockEnd ?? 0n),
-    lockDuration: Number(stake?.lockDuration ?? 0n),
+    firstStakeAt: Number(stake?.firstStakeAt ?? 0n),
     totalStaked: (data?.[3]?.result as bigint | undefined) ?? 0n,
-    totalWeighted: (data?.[4]?.result as bigint | undefined) ?? 0n,
-    /** Same as `totalWeighted` minus the burn-floor (DEAD-seed) weight.
-     *  Use this for any user-facing "weighted stake" / TVL metric so the
-     *  MINIMUM_LIQUIDITY-style floor doesn't inflate the displayed number. */
-    effectiveWeighted: (data?.[5]?.result as bigint | undefined) ?? 0n,
+    /** totalStaked minus the dead-seed floor — use for any user-facing
+     *  TVL / weighted metric. */
+    effectiveWeighted: (data?.[4]?.result as bigint | undefined) ?? 0n,
+    /** Earliest unix timestamp at which the user may unstake. Set whenever
+     *  a vote is cast; blocks unstake while > now. */
+    voteFreezeUntil: Number((data?.[5]?.result as bigint | undefined) ?? 0n),
     pendingHive: (data?.[6]?.result as bigint | undefined) ?? 0n,
     pendingEth: (data?.[7]?.result as bigint | undefined) ?? 0n,
   };
@@ -74,18 +72,25 @@ export function useHiveActions() {
         functionName: "approve",
         args: [addresses.staking, parseUnits(amount, 18)],
       }),
-    stake: (amount: string, lockSeconds: number) =>
+    stake: (amount: string) =>
       writeContractAsync({
         address: addresses.staking,
         abi: STAKING_ABI,
         functionName: "stake",
-        args: [parseUnits(amount, 18), BigInt(lockSeconds)],
+        args: [parseUnits(amount, 18)],
       }),
-    unstake: () =>
+    unstake: (amount: string) =>
       writeContractAsync({
         address: addresses.staking,
         abi: STAKING_ABI,
         functionName: "unstake",
+        args: [parseUnits(amount, 18)],
+      }),
+    unstakeAll: () =>
+      writeContractAsync({
+        address: addresses.staking,
+        abi: STAKING_ABI,
+        functionName: "unstakeAll",
       }),
     claim: (to: Address) =>
       writeContractAsync({

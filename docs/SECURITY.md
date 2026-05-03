@@ -1,5 +1,74 @@
 # Hive — Security Plan
 
+## 0a. Architecture pivot — no-lock model + launch-only rewards
+
+The protocol now ships a simplified mechanism design. Two structural changes
+that supersede earlier sections:
+
+1. **No staking locks, no tiers, no time multipliers.** `HiveStaking.stake`
+   takes only an amount; `unstake(amount)` and `unstakeAll()` are always
+   available unless the user is in a vote-freeze window. `weightOf(user) ==
+   stakes[user].amount` (1:1).
+2. **Rewards are released, not streamed.** `HiveRewards.sync` is gone. The
+   multisig calls `distributeLaunchPool(hiveAmt, ethAmt)` to advance the
+   accumulator — typically when a project hits its LAUNCH stage. Funds can
+   flow continuously into the pending pool (tax, NectarVault.harvest,
+   treasury contributions); only an explicit owner action releases them
+   to stakers.
+
+Three implications:
+- Vote integrity now leans entirely on the **vote-freeze** mechanism.
+  When `HiveGovernor.vote` records a vote it calls
+  `staking.freezeUntil(voter, votingEnd)`. The staking contract refuses
+  unstakes while the freeze is active. Without locks, this is the only
+  thing stopping a "vote then walk with principal" attack.
+- The lock-end constraint on votes (`lockEnd >= votingEnd`) is **removed**.
+  Anyone with a positive stake at vote-cast time can vote.
+- Community proposals (`submitCommunityProposal`) gate on
+  `staking.weightOf(msg.sender) >= minProposeStake` — anti-spam by capital
+  rather than by lock duration.
+
+### New residual risk — launch-payout sandwich
+With no minimum staking duration, an attacker can stake large size right
+before a `distributeLaunchPool` tx and unstake right after, capturing a
+disproportionate slice of the payout. The MasterChef accumulator math
+correctly gives them only their stake-share of *that specific* payout
+(no back-credit for past distributions), but their share of the
+in-flight payout is still nonzero.
+
+Operational mitigation (no contract change):
+1. Multisig **announces every launch payout** off-chain (Discord / Twitter
+   / governance forum) at least 24h before execution.
+2. Staking activity in that 24h window is publicly observable; legitimate
+   stakers join early, sandwich actors get noticed.
+3. Multisig sizes payouts so the sandwich economics don't pencil out
+   against gas + the social cost.
+
+Optional code-level mitigation (deferred): per-staker eligibility timer
+that disqualifies stakes younger than the most recent `lastPayoutAt`.
+Tracked off the existing `firstStakeAt` field; not yet enforced.
+
+### New community-proposal path
+`HiveGovernor.submitCommunityProposal(projectKey, title, description,
+votingEnd, threshold)` is open to any wallet holding at least
+`minProposeStake` of HIVE staked. Vote rules mirror idea proposals
+(60% YES of yes+no plus quorum). On pass, `finalizeCommunityProposal`
+auto-creates a task on the project (`status: PASSED`, no options — the
+action item *is* the description).
+
+`minProposeStake` is owner-tunable via `setMinProposeStake`. Setting it
+high spam-proofs at the cost of locking out small holders; setting it
+low is permissive but invites spam. Default at deploy: 100 HIVE.
+
+The previous lock-based audit findings (H-G1 vote-survives-unstake,
+H-G3 duplicate unstake bodies, etc.) remain mitigated. Findings tied to
+removed mechanisms (lock multipliers, forfeit, sync auto-distribution)
+are obsolete in the no-lock model.
+
+---
+
+
+
 This document captures every concrete vulnerability surfaced in the audits
 of the Hive contract suite and the engineering response. It is the
 source of truth for what is fixed in code, what is mitigated by

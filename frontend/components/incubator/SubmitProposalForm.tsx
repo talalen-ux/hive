@@ -31,7 +31,7 @@ export function SubmitProposalForm({ projectId }: { projectId: string }) {
     setError(null);
     setBusy(true);
     try {
-      const result = actions.submitCommunityProposal({
+      const result = await actions.submitCommunityProposal({
         projectId,
         title: title.trim(),
         description: description.trim(),
@@ -45,6 +45,8 @@ export function SubmitProposalForm({ projectId }: { projectId: string }) {
       setDescription("");
       setJustSubmitted(true);
       setTimeout(() => setJustSubmitted(false), 4000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
