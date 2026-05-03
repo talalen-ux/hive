@@ -10,7 +10,7 @@ const ITEMS = [
   { href: "/projects", label: "Projects" },
   { href: "/rewards", label: "Nectar" },
   { href: "/leaderboard", label: "Queens" },
-  { href: "/map", label: "Map" },
+  { href: "/docs", label: "Docs" },
 ];
 
 export function Nav() {

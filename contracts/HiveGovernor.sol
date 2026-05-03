@@ -120,6 +120,22 @@ contract HiveGovernor is Ownable2Step, Pausable {
         address submitter;
     }
 
+    /// @notice On-chain project registry. A project is created when an
+    ///         idea proposal passes (auto-register), or by the owner via
+    ///         `registerLegacyProject` for projects that exist off-chain.
+    ///         Tasks and community proposals can only target a registered
+    ///         projectKey — defeats the off-target-projectKey grief vector.
+    struct Project {
+        address owner;
+        string name;
+        string description;
+        string category;
+        uint64 createdAt;
+        uint64 fromProposalId; // 0 = legacy / no source proposal
+        uint8 stage;           // 0 INITIATION ... 4 LAUNCH
+        uint8 status;          // 0 ACTIVE, 1 LAUNCHED, 2 ARCHIVED
+    }
+
     struct TaskOption {
         string label;
         string description;
@@ -144,6 +160,9 @@ contract HiveGovernor is Ownable2Step, Pausable {
 
     mapping(uint256 => CommunityProposal) public communityProposals;
     mapping(uint256 => mapping(address => uint8)) public communityVotes;
+
+    mapping(bytes32 => Project) public projects;
+    mapping(bytes32 => bool) public projectExists;
 
     error NotOracle();
     error AddressZero();
@@ -180,6 +199,9 @@ contract HiveGovernor is Ownable2Step, Pausable {
     error NoPendingRotation();
     error RotationCooldown(uint64 effectiveAt);
     error InsufficientStakeToPropose(uint256 have, uint256 need);
+    error UnknownProject(bytes32 key);
+    error ProjectAlreadyRegistered(bytes32 key);
+    error BadProjectStatus();
 
     event OracleSet(address indexed oldOracle, address indexed newOracle);
     event OracleRotationProposed(address indexed pending, uint64 effectiveAt);
@@ -213,6 +235,14 @@ contract HiveGovernor is Ownable2Step, Pausable {
     );
     event CommunityProposalVoted(uint256 indexed id, address indexed voter, uint8 choice, uint256 weight);
     event CommunityProposalFinalized(uint256 indexed id, uint8 status, uint256 becameTaskId);
+    event ProjectRegistered(
+        bytes32 indexed key,
+        address indexed owner,
+        string name,
+        uint256 fromProposalId
+    );
+    event ProjectStageSet(bytes32 indexed key, uint8 stage);
+    event ProjectStatusSet(bytes32 indexed key, uint8 status);
 
     modifier onlyOracle() {
         if (msg.sender != oracle) revert NotOracle();
@@ -283,6 +313,65 @@ contract HiveGovernor is Ownable2Step, Pausable {
     function pause() external onlyOwner { _pause(); }
     function unpause() external onlyOwner { _unpause(); }
 
+    // ─────────────────────── Project registry ───────────────────────
+
+    /// @notice Register a project that exists off-chain (e.g. seed
+    ///         catalogue) but did not pass through the proposal flow.
+    ///         Tasks and community proposals can only target registered
+    ///         projects — this is the seed path for legacy entries.
+    function registerLegacyProject(
+        bytes32 key,
+        string calldata name,
+        string calldata description,
+        string calldata category,
+        address owner
+    ) external onlyOwner {
+        if (key == bytes32(0)) revert ProjectKeyZero();
+        if (owner == address(0)) revert AddressZero();
+        if (projectExists[key]) revert ProjectAlreadyRegistered(key);
+        _checkTitle(name);
+        if (bytes(description).length > MAX_DESCRIPTION_LEN) revert DescriptionTooLong();
+        if (bytes(category).length > MAX_CATEGORY_LEN) revert CategoryTooLong();
+
+        projects[key] = Project({
+            owner: owner,
+            name: name,
+            description: description,
+            category: category,
+            createdAt: uint64(block.timestamp),
+            fromProposalId: 0,
+            stage: 0,
+            status: 0
+        });
+        projectExists[key] = true;
+        emit ProjectRegistered(key, owner, name, 0);
+    }
+
+    /// @notice Advance / set a project's stage. Multisig responsibility —
+    ///         in v2 this could fire automatically when a stage's task
+    ///         votes resolve; for now it's an explicit admin action.
+    function setProjectStage(bytes32 key, uint8 stage) external onlyOwner {
+        if (!projectExists[key]) revert UnknownProject(key);
+        if (stage >= MAX_STAGES) revert BadStage();
+        projects[key].stage = stage;
+        emit ProjectStageSet(key, stage);
+    }
+
+    /// @notice Mark a project LAUNCHED (1) or ARCHIVED (2). 0 (ACTIVE) is
+    ///         the default; archive is permanent.
+    function setProjectStatus(bytes32 key, uint8 status) external onlyOwner {
+        if (!projectExists[key]) revert UnknownProject(key);
+        if (status > 2) revert BadProjectStatus();
+        projects[key].status = status;
+        emit ProjectStatusSet(key, status);
+    }
+
+    /// @notice Stable derivation for the on-chain key of a project that
+    ///         was created via a passing idea proposal.
+    function projectKeyOfProposal(uint256 proposalId) public pure returns (bytes32) {
+        return keccak256(abi.encodePacked("hive.project.proposal:", proposalId));
+    }
+
     // ─────────────────────── Idea proposals (oracle) ───────────────────────
 
     /// @notice Submit a project-idea proposal. Open to the oracle (AI
@@ -351,9 +440,29 @@ contract HiveGovernor is Ownable2Step, Pausable {
         if (p.status != STATUS_ACTIVE) revert NotActive();
         if (block.timestamp < p.votingEnd) revert VotingStillOpen();
 
-        p.status = _evaluatePass(p.yes, p.no, p.abstain, p.threshold)
-            ? STATUS_PASSED
-            : STATUS_REJECTED;
+        bool passed = _evaluatePass(p.yes, p.no, p.abstain, p.threshold);
+        if (passed) {
+            p.status = STATUS_PASSED;
+            // Auto-register the project. The proposal's submitter (oracle
+            // for AI ideas, the staker for community ones) becomes owner.
+            bytes32 key = projectKeyOfProposal(id);
+            if (!projectExists[key]) {
+                projects[key] = Project({
+                    owner: p.submitter,
+                    name: p.title,
+                    description: p.description,
+                    category: p.category,
+                    createdAt: uint64(block.timestamp),
+                    fromProposalId: uint64(id),
+                    stage: 0,
+                    status: 0
+                });
+                projectExists[key] = true;
+                emit ProjectRegistered(key, p.submitter, p.title, id);
+            }
+        } else {
+            p.status = STATUS_REJECTED;
+        }
         emit ProposalFinalized(id, p.status);
     }
 
@@ -375,6 +484,9 @@ contract HiveGovernor is Ownable2Step, Pausable {
         _checkWindow(votingEnd);
         if (threshold == 0) revert ThresholdRequired();
         if (projectKey == bytes32(0)) revert ProjectKeyZero();
+        // Project must be registered. Closes the off-target-projectKey
+        // grief vector — proposals can only target real projects.
+        if (!projectExists[projectKey]) revert UnknownProject(projectKey);
         _checkTitle(title);
         _checkDescription(description);
 
@@ -467,6 +579,8 @@ contract HiveGovernor is Ownable2Step, Pausable {
         if (threshold == 0) revert ThresholdRequired();
         if (stage >= MAX_STAGES) revert BadStage();
         if (projectKey == bytes32(0)) revert ProjectKeyZero();
+        // Same registry gate as submitCommunityProposal.
+        if (!projectExists[projectKey]) revert UnknownProject(projectKey);
 
         uint256 n = options.length;
         if (n < 2) revert TooFewOptions();

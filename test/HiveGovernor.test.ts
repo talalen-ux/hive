@@ -47,6 +47,14 @@ async function deployFull() {
   );
   await staking.setGovernor(await governor.getAddress());
 
+  // Register legacy projects so tests can submit tasks / community proposals
+  // against them without each test having to register first.
+  for (const id of ["p", "p-buzz", "proj-buzz", "proj-meadow", "proj-x"]) {
+    await governor
+      .connect(owner)
+      .registerLegacyProject(KEY(id), id, "seed", "infra", owner.address);
+  }
+
   await hive.transfer(alice.address, PARSE("1000"));
   await hive.transfer(bob.address, PARSE("1000"));
   await hive.transfer(carol.address, PARSE("1000"));
@@ -249,6 +257,87 @@ describe("HiveGovernor — multi-option tasks (oracle or staker)", () => {
     const t = await governor.tasks(1);
     expect(t.optionCount).to.equal(3);
     expect(t.submitter).to.equal(alice.address);
+  });
+});
+
+describe("HiveGovernor — project registry", () => {
+  it("rejects task submission against an unknown projectKey", async () => {
+    const { alice, hive, staking, governor } = await deployFull();
+    await hive.connect(alice).approve(await staking.getAddress(), PARSE("150"));
+    await staking.connect(alice).stake(PARSE("150"));
+    const end = (await getNow()) + 2 * DAY;
+    await expect(
+      governor.connect(alice).createTask(
+        KEY("not-registered"),
+        "Pick a name",
+        0,
+        [
+          { label: "A", description: "" },
+          { label: "B", description: "" },
+        ],
+        end,
+        PARSE("10"),
+      ),
+    ).to.be.revertedWithCustomError(governor, "UnknownProject");
+  });
+
+  it("rejects community proposal against an unknown projectKey", async () => {
+    const { alice, hive, staking, governor } = await deployFull();
+    await hive.connect(alice).approve(await staking.getAddress(), PARSE("150"));
+    await staking.connect(alice).stake(PARSE("150"));
+    const end = (await getNow()) + 2 * DAY;
+    await expect(
+      governor
+        .connect(alice)
+        .submitCommunityProposal(KEY("not-registered"), "T", "Long enough description here.", end, PARSE("10")),
+    ).to.be.revertedWithCustomError(governor, "UnknownProject");
+  });
+
+  it("auto-registers a project on idea proposal PASS", async () => {
+    const { oracle, alice, bob, hive, staking, governor } = await deployFull();
+    const sa = await staking.getAddress();
+    await hive.connect(alice).approve(sa, PARSE("700"));
+    await staking.connect(alice).stake(PARSE("700"));
+    await hive.connect(bob).approve(sa, PARSE("300"));
+    await staking.connect(bob).stake(PARSE("300"));
+
+    const end = (await getNow()) + 2 * DAY;
+    await governor
+      .connect(oracle)
+      .createProposal("Pollen", "Yield router for L2 dust positions.", "defi", "5 weeks", 7, 8, end, PARSE("100"));
+    await governor.connect(alice).vote(1, 1);
+    await governor.connect(bob).vote(1, 2);
+
+    await time.increase(2 * DAY + 1);
+    await governor.finalizeProposal(1);
+
+    const key = await governor.projectKeyOfProposal(1);
+    expect(await governor.projectExists(key)).to.equal(true);
+    const project = await governor.projects(key);
+    expect(project.name).to.equal("Pollen");
+    expect(project.owner).to.equal(oracle.address);
+    expect(project.fromProposalId).to.equal(1n);
+  });
+
+  it("registerLegacyProject is idempotent — second call reverts", async () => {
+    const { owner, governor } = await deployFull();
+    await expect(
+      governor
+        .connect(owner)
+        .registerLegacyProject(KEY("p"), "p", "seed", "infra", owner.address),
+    ).to.be.revertedWithCustomError(governor, "ProjectAlreadyRegistered");
+  });
+
+  it("setProjectStage gates on existence and stage range", async () => {
+    const { owner, governor } = await deployFull();
+    await expect(
+      governor.connect(owner).setProjectStage(KEY("nope"), 0),
+    ).to.be.revertedWithCustomError(governor, "UnknownProject");
+    await expect(
+      governor.connect(owner).setProjectStage(KEY("p"), 99),
+    ).to.be.revertedWithCustomError(governor, "BadStage");
+    await governor.connect(owner).setProjectStage(KEY("p"), 4);
+    expect((await governor.projects(KEY("p"))).stage).to.equal(4);
   });
 });
 

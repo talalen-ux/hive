@@ -99,6 +99,21 @@ export const GOVERNOR_ABI = [
   { type: "function", name: "communityVotes", stateMutability: "view",
     inputs: [{ name: "id", type: "uint256" }, { name: "voter", type: "address" }],
     outputs: [{ type: "uint8" }] },
+  // Project registry views.
+  { type: "function", name: "projects", stateMutability: "view", inputs: [{ type: "bytes32" }], outputs: [
+    { name: "owner", type: "address" },
+    { name: "name", type: "string" },
+    { name: "description", type: "string" },
+    { name: "category", type: "string" },
+    { name: "createdAt", type: "uint64" },
+    { name: "fromProposalId", type: "uint64" },
+    { name: "stage", type: "uint8" },
+    { name: "status", type: "uint8" },
+  ] },
+  { type: "function", name: "projectExists", stateMutability: "view",
+    inputs: [{ type: "bytes32" }], outputs: [{ type: "bool" }] },
+  { type: "function", name: "projectKeyOfProposal", stateMutability: "pure",
+    inputs: [{ name: "proposalId", type: "uint256" }], outputs: [{ type: "bytes32" }] },
   { type: "function", name: "tasks", stateMutability: "view", inputs: [{ type: "uint256" }], outputs: [
     { name: "projectKey", type: "bytes32" },
     { name: "description", type: "string" },

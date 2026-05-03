@@ -100,6 +100,19 @@ async function main() {
   // Wire the governor's vote-freeze hook on staking. One-shot.
   await (await staking.setGovernor(governorAddr)).wait();
 
+  // Register the seed projects on-chain so tasks / community proposals
+  // can target them. Owner == deployer for now; multisig can rotate later.
+  console.log("Registering seed projects...");
+  const SEEDS = [
+    { id: "proj-buzz", name: "Buzz", desc: "On-chain telegram for the swarm.", category: "social" },
+    { id: "proj-meadow", name: "Meadow", desc: "Yield aggregator with hex-shaped vaults.", category: "defi" },
+    { id: "proj-drone", name: "Forager", desc: "Onchain agent that hunts opportunity for the hive.", category: "infra" },
+  ] as const;
+  for (const s of SEEDS) {
+    const key = ethers.keccak256(ethers.toUtf8Bytes(s.id));
+    await (await governor.registerLegacyProject(key, s.name, s.desc, s.category, deployer.address)).wait();
+  }
+
   console.log("\n✅ Hive stack deployed and wired.");
   console.log("Next steps:");
   console.log("  1. scripts/seedLiquidity.ts — fund the Uniswap V2 pool");

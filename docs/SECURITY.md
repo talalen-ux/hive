@@ -88,12 +88,28 @@ If spam becomes a real issue, the multisig raises `minProposeStake` via
 `setMinProposeStake`. The dapp filters out low-quorum / unfinalised
 proposals from prominent surfaces.
 
-**Provenance griefing.** A community member can submit a task with
-`projectKey == keccak256("proj-foobar")` for a project they don't own.
-The vote runs harmlessly — if no one votes, finalize REJECTS. UI clutter
-on the wrong project page is the main cost. Mitigation: the dapp filters
-ACTIVE-only proposals by default; finalised-no-quorum rows fade into a
-collapsed "history" tail (TODO).
+**Provenance griefing — fixed.** Earlier revisions allowed any staker
+to call `createTask(projectKey, …)` with an arbitrary key, polluting
+the dapp with tasks targeting nonexistent projects. The current
+revision ships an on-chain project registry — `createTask` and
+`submitCommunityProposal` revert with `UnknownProject(key)` for any
+projectKey that is not in `projectExists[]`. The registry populates
+two ways:
+
+1. **Auto-register on PASS.** `finalizeProposal` for an idea proposal
+   that passes derives a deterministic key
+   (`projectKeyOfProposal(id)`) and registers a `Project` with the
+   proposal's submitter as initial owner. The dapp picks it up via
+   `projects(key)`.
+2. **Owner-registered legacy.** `registerLegacyProject(key, name,
+   description, category, owner)` is `onlyOwner`. The deploy script
+   uses it to seed the catalogue projects (Buzz / Meadow / Forager) so
+   the existing UI stays functional out of the box.
+
+Stage management: `setProjectStage(key, stage)` and
+`setProjectStatus(key, status)` are `onlyOwner`. v2 could automate
+stage advancement from finalised tasks; today it's an explicit admin
+action so the multisig retains control over what counts as "shipped".
 
 The previous lock-based audit findings (H-G1 vote-survives-unstake,
 H-G3 duplicate unstake bodies, etc.) remain mitigated. Findings tied to
