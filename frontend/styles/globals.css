@@ -80,3 +80,39 @@ body,
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(245, 185, 66, 0.32);
 }
+
+/* ─── Hive dome (HiveOrb) ──────────────────────────────────────────────── */
+
+/* Tilts the SVG hex grid into a perspective dome. The central core is
+   rendered separately on top of this so it stays facing the camera. */
+.dome-perspective {
+  perspective: 1100px;
+  perspective-origin: 50% 38%;
+}
+.dome-tilt {
+  transform: rotateX(38deg) scaleY(0.92);
+  transform-origin: 50% 50%;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+/* Per-cell breathing animation. Each lit hex picks its own delay + duration
+   inline so the dome shimmers asynchronously instead of pulsing in unison. */
+@keyframes hexPulse {
+  0%, 100% { opacity: 0.4; filter: drop-shadow(0 0 3px rgba(255, 200, 90, 0.55)); }
+  50%      { opacity: 1;   filter: drop-shadow(0 0 9px rgba(255, 215, 106, 1)); }
+}
+@keyframes hexCore {
+  0%, 100% { opacity: 0.75; transform: scale(0.96); }
+  50%      { opacity: 1;    transform: scale(1.02); }
+}
+@keyframes domeRotate {
+  0%   { transform: rotateX(38deg) scaleY(0.92) rotateZ(0deg); }
+  100% { transform: rotateX(38deg) scaleY(0.92) rotateZ(360deg); }
+}
+.dome-rotate {
+  animation: domeRotate 90s linear infinite;
+}
+.dome-core-pulse {
+  animation: hexCore 3.4s ease-in-out infinite;
+}
