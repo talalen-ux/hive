@@ -39,7 +39,7 @@ export default function Dashboard() {
           transition={{ delay: 0.4, duration: 0.7 }}
           className="mx-auto mt-5 max-w-xl text-sm sm:text-base font-light text-honey-soft/60"
         >
-          Stake $HIVE. The hive flows fees to those who hold the longest.
+          an experiment in decentralized funding
         </motion.p>
       </div>
 
