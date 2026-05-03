@@ -6,6 +6,8 @@ import { useIncubator } from "@/hooks/useIncubator";
 import { useProject } from "@/hooks/useProjects";
 import { PipelineProgress } from "@/components/incubator/PipelineProgress";
 import { TaskVote } from "@/components/incubator/TaskVote";
+import { SubmitProposalForm } from "@/components/incubator/SubmitProposalForm";
+import { CommunityProposalRow } from "@/components/incubator/CommunityProposalRow";
 import {
   STAGE_ORDER,
   categoryAccent,
@@ -23,6 +25,30 @@ export default function ProjectDetail() {
   const { project: apiProject } = useProject(typeof id === "string" ? id : undefined, seed);
   const project = apiProject ?? seed;
 
+  const projectTasks = useMemo(
+    () => state.tasks.filter((t) => t.projectId === id),
+    [state.tasks, id],
+  );
+
+  // Open votes: ACTIVE A/B/C tasks. Promoted-from-proposal tasks have empty
+  // option arrays and live in the proposals section instead.
+  const openTasks = useMemo(
+    () => projectTasks.filter((t) => t.status === "ACTIVE" && t.options.length > 0),
+    [projectTasks],
+  );
+
+  // Community proposals for this project, sorted with active windows first
+  // (closest-closing first), then closed ones (most recent first).
+  const communityProposals = useMemo(() => {
+    const rows = state.communityProposals.filter((p) => p.projectId === id);
+    return rows.slice().sort((a, b) => {
+      if (a.status === "ACTIVE" && b.status !== "ACTIVE") return -1;
+      if (b.status === "ACTIVE" && a.status !== "ACTIVE") return 1;
+      if (a.status === "ACTIVE") return a.votingEnd - b.votingEnd;
+      return b.submittedAt - a.submittedAt;
+    });
+  }, [state.communityProposals, id]);
+
   if (!project) {
     return (
       <div className="pt-12 text-center">
@@ -37,8 +63,8 @@ export default function ProjectDetail() {
     );
   }
 
-  const tasks = state.tasks.filter((t) => t.projectId === project.id);
   const stageProgress = stageProgressOf(project);
+  const activeProposalCount = communityProposals.filter((p) => p.status === "ACTIVE").length;
 
   return (
     <div className="pt-6 sm:pt-12">
@@ -96,6 +122,54 @@ export default function ProjectDetail() {
         <div className="flex items-baseline justify-between">
           <div>
             <h2 className="text-xl font-light text-honey-soft">
+              Community proposals
+            </h2>
+            <p className="mt-1 text-[12px] text-honey-soft/45">
+              Stakers submit · holders vote · 60% YES + quorum to pass · winners become tasks
+            </p>
+          </div>
+          <span className="rounded-full bg-honey/10 px-3 py-1 text-[10px] uppercase tracking-wider2 text-honey-soft/75">
+            {activeProposalCount} open
+          </span>
+        </div>
+
+        <div className="mt-6 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-4 items-start">
+          <SubmitProposalForm projectId={project.id} />
+
+          {communityProposals.length === 0 ? (
+            <div className="glass-panel rounded-2xl p-8 text-center text-sm text-honey-soft/60">
+              No proposals yet for this project. Be the first.
+            </div>
+          ) : (
+            <motion.div
+              initial="hidden"
+              animate="show"
+              variants={{
+                hidden: {},
+                show: { transition: { staggerChildren: 0.08, delayChildren: 0.05 } },
+              }}
+              className="space-y-4"
+            >
+              {communityProposals.map((p) => (
+                <motion.div
+                  key={p.id}
+                  variants={{
+                    hidden: { opacity: 0, y: 12 },
+                    show: { opacity: 1, y: 0, transition: { duration: 0.5 } },
+                  }}
+                >
+                  <CommunityProposalRow proposal={p} />
+                </motion.div>
+              ))}
+            </motion.div>
+          )}
+        </div>
+      </section>
+
+      <section className="mt-12">
+        <div className="flex items-baseline justify-between">
+          <div>
+            <h2 className="text-xl font-light text-honey-soft">
               Open task votes
             </h2>
             <p className="mt-1 text-[12px] text-honey-soft/45">
@@ -103,11 +177,11 @@ export default function ProjectDetail() {
             </p>
           </div>
           <span className="rounded-full bg-honey/10 px-3 py-1 text-[10px] uppercase tracking-wider2 text-honey-soft/75">
-            {tasks.length} active
+            {openTasks.length} active
           </span>
         </div>
 
-        {tasks.length === 0 ? (
+        {openTasks.length === 0 ? (
           <div className="mt-6 glass-panel rounded-2xl p-8 text-center text-sm text-honey-soft/60">
             No open task votes — current stage is between motions.
           </div>
@@ -121,7 +195,7 @@ export default function ProjectDetail() {
             }}
             className="mt-6 space-y-4"
           >
-            {tasks.map((t) => (
+            {openTasks.map((t) => (
               <motion.div
                 key={t.id}
                 variants={{

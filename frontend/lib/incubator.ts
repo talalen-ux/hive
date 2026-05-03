@@ -73,6 +73,27 @@ export type Task = {
   status: "ACTIVE" | "DECIDED" | "PENDING";
   votingEnd: number;
   decidedOption?: string;
+  /** Set when this task was promoted from a passed community proposal. */
+  fromProposalId?: string;
+};
+
+export type CommunityProposal = {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string;
+  /** Wallet that submitted the proposal. */
+  submittedBy: string;
+  submittedAt: number;
+  votingEnd: number;
+  yes: number;
+  no: number;
+  abstain: number;
+  participants: number;
+  threshold: number;
+  status: "ACTIVE" | "PASSED" | "REJECTED";
+  /** Populated when the proposal passes and is promoted to a task. */
+  becameTaskId?: string;
 };
 
 export type StageEntry = {
@@ -343,6 +364,86 @@ const SEED_TASKS: Task[] = [
   },
 ];
 
+// Community proposals — submitted by token holders (mock layer until the
+// contract grows a non-oracle createProposal path). On pass they are
+// promoted to a project task.
+const SEED_COMMUNITY_PROPOSALS: CommunityProposal[] = [
+  {
+    id: "comm-buzz-voice",
+    projectId: "proj-buzz",
+    title: "Add native voice rooms to v1",
+    description:
+      "Browser-native voice rooms with token-gated entry. Discord stops being the default; rooms inherit Buzz's reputation graph.",
+    submittedBy: synthAddr(11),
+    submittedAt: ANCHOR - 18 * HOUR,
+    votingEnd: ANCHOR + 6 * HOUR,
+    yes: 47_400,
+    no: 9_100,
+    abstain: 2_300,
+    participants: 64,
+    threshold: 100_000,
+    status: "ACTIVE",
+  },
+  {
+    id: "comm-buzz-mod",
+    projectId: "proj-buzz",
+    title: "Self-hosted mod nodes per room",
+    description:
+      "Each major room runs its own mod logic on a small VPS. Not federated — transparent, replaceable, and signed by the room owner.",
+    submittedBy: synthAddr(12),
+    submittedAt: ANCHOR - 6 * HOUR,
+    votingEnd: ANCHOR + 18 * HOUR,
+    yes: 12_500,
+    no: 6_200,
+    abstain: 1_400,
+    participants: 19,
+    threshold: 100_000,
+    status: "ACTIVE",
+  },
+  {
+    id: "comm-meadow-base",
+    projectId: "proj-meadow",
+    title: "Whitelist Aerodrome on Base for v1 routing",
+    description:
+      "Highest TVL on an L2 outside Uniswap. v1 launching without it leaves yield on the table.",
+    submittedBy: synthAddr(13),
+    submittedAt: ANCHOR - 30 * HOUR,
+    votingEnd: ANCHOR - 6 * HOUR,
+    yes: 142_000,
+    no: 16_300,
+    abstain: 4_100,
+    participants: 89,
+    threshold: 100_000,
+    status: "PASSED",
+    becameTaskId: "task-meadow-aerodrome",
+  },
+  {
+    id: "comm-forager-veto",
+    projectId: "proj-drone",
+    title: "30-second multisig veto window on every action",
+    description:
+      "Every agent action queues for 30 seconds before execution; any multisig signer can veto. Predictable safety bar.",
+    submittedBy: synthAddr(14),
+    submittedAt: ANCHOR - 8 * HOUR,
+    votingEnd: ANCHOR + 16 * HOUR,
+    yes: 33_700,
+    no: 11_400,
+    abstain: 6_900,
+    participants: 41,
+    threshold: 100_000,
+    status: "ACTIVE",
+  },
+];
+
+function synthAddr(i: number): string {
+  const hex = (n: number) => n.toString(16).padStart(2, "0");
+  let out = "0x";
+  for (let j = 0; j < 20; j++) {
+    out += hex((i * 41 + j * 17 + 11) & 0xff);
+  }
+  return out;
+}
+
 const SEED_SWARM: SwarmEntry[] = Array.from({ length: 12 }, (_, i) => {
   const r = (n: number) => ((Math.sin(i * 73 + n) + 1) / 2);
   const address =
@@ -369,8 +470,12 @@ type State = {
   projects: Project[];
   tasks: Task[];
   swarm: SwarmEntry[];
+  communityProposals: CommunityProposal[];
   // map of "vote-key" -> the user's choice. vote-key = `${type}:${id}`.
+  // For community proposals the key is `community:${id}`.
   myVotes: Record<string, string>;
+  /** Wallets whose user-submitted proposals persist across reload. */
+  myProposals: string[];
 };
 
 const KEY = "hive.incubator.v1";
@@ -382,7 +487,9 @@ function freshState(): State {
     projects: SEED_PROJECTS,
     tasks: SEED_TASKS,
     swarm: SEED_SWARM,
+    communityProposals: SEED_COMMUNITY_PROPOSALS,
     myVotes: {},
+    myProposals: [],
   };
 }
 
@@ -393,8 +500,19 @@ function emit() {
   listeners.forEach((l) => l());
   if (typeof window !== "undefined") {
     try {
-      // Persist only the user's votes — seed data is recomputed on reload.
-      localStorage.setItem(KEY, JSON.stringify({ myVotes: state.myVotes }));
+      // Persist user-controlled additions: votes + their submitted proposals.
+      // Everything else is seed data and recomputed on reload.
+      const userProposals = state.communityProposals.filter((p) =>
+        state.myProposals.includes(p.id),
+      );
+      localStorage.setItem(
+        KEY,
+        JSON.stringify({
+          myVotes: state.myVotes,
+          myProposals: state.myProposals,
+          userProposals,
+        }),
+      );
     } catch {}
   }
 }
@@ -404,8 +522,25 @@ function hydrate() {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return;
-    const parsed = JSON.parse(raw) as { myVotes?: Record<string, string> };
-    if (parsed.myVotes) state = { ...state, myVotes: parsed.myVotes };
+    const parsed = JSON.parse(raw) as {
+      myVotes?: Record<string, string>;
+      myProposals?: string[];
+      userProposals?: CommunityProposal[];
+    };
+    let next = state;
+    if (parsed.myVotes) next = { ...next, myVotes: parsed.myVotes };
+    if (parsed.myProposals) next = { ...next, myProposals: parsed.myProposals };
+    if (parsed.userProposals && parsed.userProposals.length > 0) {
+      // Merge user-submitted proposals back in. Existing seed entries with
+      // the same id are kept (seed wins) so a stale localStorage doesn't
+      // clobber the demo seed.
+      const existing = new Set(next.communityProposals.map((p) => p.id));
+      const merged = next.communityProposals.concat(
+        parsed.userProposals.filter((p) => !existing.has(p.id)),
+      );
+      next = { ...next, communityProposals: merged };
+    }
+    state = next;
   } catch {}
 }
 
@@ -519,6 +654,139 @@ export function voteOnTask(taskId: string, optionId: string) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Community proposals
+
+const COMMUNITY_VOTING_HOURS = 24;
+const COMMUNITY_THRESHOLD = 100_000;
+const COMMUNITY_PASS_RATIO = 0.6; // 60% YES of (yes + no)
+
+/**
+ * Submit a new community proposal scoped to a project. Returns the new
+ * proposal's id. Caller should already have checked that `submitter` is a
+ * connected wallet — the store does not enforce permissioning since on-chain
+ * staker-eligibility lives in the contract layer.
+ */
+export function submitProposal(input: {
+  projectId: string;
+  title: string;
+  description: string;
+  submitter: string;
+}): { id: string } | { error: string } {
+  const title = input.title.trim();
+  const description = input.description.trim();
+  if (title.length < 5) return { error: "Title needs at least 5 characters." };
+  if (title.length > 80) return { error: "Title must be 80 characters or fewer." };
+  if (description.length < 20)
+    return { error: "Description needs at least 20 characters." };
+  if (description.length > 500)
+    return { error: "Description must be 500 characters or fewer." };
+  if (!state.projects.find((p) => p.id === input.projectId))
+    return { error: "Unknown project." };
+
+  const now = Date.now();
+  const id = `comm-user-${now.toString(36)}`;
+  const proposal: CommunityProposal = {
+    id,
+    projectId: input.projectId,
+    title,
+    description,
+    submittedBy: input.submitter,
+    submittedAt: now,
+    votingEnd: now + COMMUNITY_VOTING_HOURS * HOUR,
+    yes: 0,
+    no: 0,
+    abstain: 0,
+    participants: 0,
+    threshold: COMMUNITY_THRESHOLD,
+    status: "ACTIVE",
+  };
+  state = {
+    ...state,
+    communityProposals: [proposal, ...state.communityProposals],
+    myProposals: [id, ...state.myProposals],
+  };
+  emit();
+  return { id };
+}
+
+export function voteOnCommunityProposal(
+  proposalId: string,
+  choice: "yes" | "no" | "abstain",
+) {
+  const key = `community:${proposalId}`;
+  if (state.myVotes[key]) return;
+  const target = state.communityProposals.find((p) => p.id === proposalId);
+  if (!target || target.status !== "ACTIVE") return;
+  if (Date.now() >= target.votingEnd) return;
+
+  state = {
+    ...state,
+    communityProposals: state.communityProposals.map((p) =>
+      p.id !== proposalId
+        ? p
+        : {
+            ...p,
+            yes: p.yes + (choice === "yes" ? VOTING_POWER : 0),
+            no: p.no + (choice === "no" ? VOTING_POWER : 0),
+            abstain: p.abstain + (choice === "abstain" ? VOTING_POWER : 0),
+            participants: p.participants + 1,
+          },
+    ),
+    myVotes: { ...state.myVotes, [key]: choice },
+  };
+  emit();
+}
+
+/**
+ * Walk all ACTIVE community proposals whose voting window has closed and
+ * finalise them. Passing proposals are promoted to tasks on their project
+ * (status DECIDED, no options — the action item is the description). This
+ * is invoked from `useIncubator()` so finalisation happens lazily on the
+ * next render after a window closes; no separate scheduler needed.
+ */
+export function finalizeMaturedCommunityProposals() {
+  const now = Date.now();
+  const matured = state.communityProposals.filter(
+    (p) => p.status === "ACTIVE" && p.votingEnd <= now,
+  );
+  if (matured.length === 0) return;
+
+  const newTasks: Task[] = [];
+  const updatedProposals = state.communityProposals.map((p) => {
+    if (p.status !== "ACTIVE" || p.votingEnd > now) return p;
+    const total = p.yes + p.no + p.abstain;
+    const binary = p.yes + p.no;
+    const passes =
+      total >= p.threshold &&
+      binary > 0 &&
+      p.yes / binary >= COMMUNITY_PASS_RATIO;
+    if (!passes) return { ...p, status: "REJECTED" as const };
+
+    const project = state.projects.find((pr) => pr.id === p.projectId);
+    const stage: ProjectStage = project?.currentStage ?? "INITIATION";
+    const taskId = `task-from-${p.id}`;
+    newTasks.push({
+      id: taskId,
+      projectId: p.projectId,
+      stage,
+      description: p.title,
+      options: [],
+      status: "DECIDED",
+      votingEnd: p.votingEnd,
+      fromProposalId: p.id,
+    });
+    return { ...p, status: "PASSED" as const, becameTaskId: taskId };
+  });
+
+  state = {
+    ...state,
+    communityProposals: updatedProposals,
+    tasks: [...state.tasks, ...newTasks],
+  };
+  emit();
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Helpers
 
 export function totalVotes(p: Proposal): number {
@@ -533,6 +801,20 @@ export function passing(p: Proposal): boolean {
   const t = totalVotes(p);
   if (t === 0) return false;
   return p.yes / t >= 0.6 && quorumMet(p);
+}
+
+export function communityTotal(p: CommunityProposal): number {
+  return p.yes + p.no + p.abstain;
+}
+
+export function communityQuorumMet(p: CommunityProposal): boolean {
+  return communityTotal(p) >= p.threshold;
+}
+
+export function communityPassing(p: CommunityProposal): boolean {
+  const binary = p.yes + p.no;
+  if (binary === 0) return false;
+  return p.yes / binary >= COMMUNITY_PASS_RATIO && communityQuorumMet(p);
 }
 
 export function fmtAddress(a: string) {

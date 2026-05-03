@@ -2,11 +2,14 @@ import { useEffect, useMemo, useSyncExternalStore } from "react";
 import {
   approveIdea as mockApproveIdea,
   ensureHydrated,
+  finalizeMaturedCommunityProposals,
   getState,
   rejectIdea as mockRejectIdea,
   subscribe,
   voteOnProposal as mockVoteOnProposal,
   voteOnTask as mockVoteOnTask,
+  submitProposal as mockSubmitProposal,
+  voteOnCommunityProposal as mockVoteOnCommunity,
 } from "@/lib/incubator";
 import {
   useGovernorActions,
@@ -19,6 +22,12 @@ export function useIncubator() {
   }, []);
   const mock = useSyncExternalStore(subscribe, getState, getState);
   const onchain = useGovernorIncubator();
+
+  // Lazy maturation: every render past a closed voting window finalises any
+  // community proposal whose deadline has elapsed (no scheduler needed).
+  useEffect(() => {
+    finalizeMaturedCommunityProposals();
+  }, [mock]);
 
   return useMemo(() => {
     if (!onchain.enabled) return mock;
@@ -118,6 +127,14 @@ export function useIncubatorActions() {
     },
     approveIdea: (ideaId: string) => mockApproveIdea(ideaId),
     rejectIdea: (ideaId: string) => mockRejectIdea(ideaId),
+    submitCommunityProposal: (input: {
+      projectId: string;
+      title: string;
+      description: string;
+      submitter: string;
+    }) => mockSubmitProposal(input),
+    voteOnCommunityProposal: (id: string, choice: "yes" | "no" | "abstain") =>
+      mockVoteOnCommunity(id, choice),
   };
 }
 
