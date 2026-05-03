@@ -6,7 +6,8 @@
  * need to change when we swap the backing store.
  */
 
-export type Category = "consumer" | "defi" | "infra" | "social" | "tooling";
+export const CATEGORIES = ["consumer", "defi", "infra", "social", "tooling"] as const;
+export type Category = (typeof CATEGORIES)[number];
 export type IdeaStatus = "PENDING" | "ACTIVE_VOTE" | "APPROVED" | "REJECTED";
 export type ProjectStage =
   | "INITIATION"

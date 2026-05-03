@@ -191,6 +191,65 @@ export function useIncubatorActions() {
       if (!gov.enabled || n === null) return;
       await gov.finalizeCommunity(n);
     },
+
+    /**
+     * Submit a project idea (community-callable). Goes on-chain via
+     * createProposal when the governor is wired and the user clears the
+     * minProposeStake bar. No mock fallback for now — community ideas
+     * land in the same on-chain proposals map as AI-generated ones.
+     */
+    submitProjectIdea: async (params: {
+      title: string;
+      description: string;
+      category: string;
+      buildTime: string;
+      complexity: number;
+      marketPotential: number;
+    }): Promise<{ ok: true } | { error: string }> => {
+      if (!gov.enabled) {
+        return { error: "Governor not configured on this chain." };
+      }
+      const votingEnd = BigInt(Math.floor(Date.now() / 1000) + 24 * 60 * 60 + 5 * 60);
+      try {
+        await gov.submitProjectIdea({
+          ...params,
+          votingEndUnixSec: votingEnd,
+          threshold: 1n,
+        });
+        return { ok: true };
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+
+    /**
+     * Submit a multi-option task (community-callable). Used for naming
+     * votes (Buzz / Hum / Comb) and any other A/B/C-style decision.
+     */
+    submitTask: async (params: {
+      projectId: string;
+      description: string;
+      stage: number;
+      options: { label: string; description: string }[];
+    }): Promise<{ ok: true } | { error: string }> => {
+      if (!gov.enabled) {
+        return { error: "Governor not configured on this chain." };
+      }
+      if (params.options.length < 2) {
+        return { error: "Need at least two options." };
+      }
+      const votingEnd = BigInt(Math.floor(Date.now() / 1000) + 24 * 60 * 60 + 5 * 60);
+      try {
+        await gov.submitTask({
+          ...params,
+          votingEndUnixSec: votingEnd,
+          threshold: 1n,
+        });
+        return { ok: true };
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) };
+      }
+    },
   };
 }
 

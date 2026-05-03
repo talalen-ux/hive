@@ -76,6 +76,7 @@ export const GOVERNOR_ABI = [
     { name: "complexity", type: "uint8" },
     { name: "marketPotential", type: "uint8" },
     { name: "status", type: "uint8" },
+    { name: "submitter", type: "address" },
   ] },
   { type: "function", name: "proposalVotes", stateMutability: "view",
     inputs: [{ name: "id", type: "uint256" }, { name: "voter", type: "address" }],
@@ -109,6 +110,7 @@ export const GOVERNOR_ABI = [
     { name: "optionCount", type: "uint8" },
     { name: "status", type: "uint8" },
     { name: "decidedOption", type: "uint8" },
+    { name: "submitter", type: "address" },
   ] },
   { type: "function", name: "taskOptions", stateMutability: "view", inputs: [{ type: "uint256" }], outputs: [
     { type: "tuple[]", components: [
@@ -131,6 +133,31 @@ export const GOVERNOR_ABI = [
       { name: "projectKey", type: "bytes32" },
       { name: "title", type: "string" },
       { name: "description", type: "string" },
+      { name: "votingEnd", type: "uint64" },
+      { name: "threshold", type: "uint128" },
+    ], outputs: [{ name: "id", type: "uint256" }] },
+  // Project-idea proposal (oracle OR staker with weight >= minProposeStake).
+  { type: "function", name: "createProposal", stateMutability: "nonpayable",
+    inputs: [
+      { name: "title", type: "string" },
+      { name: "description", type: "string" },
+      { name: "category", type: "string" },
+      { name: "buildTime", type: "string" },
+      { name: "complexity", type: "uint8" },
+      { name: "marketPotential", type: "uint8" },
+      { name: "votingEnd", type: "uint64" },
+      { name: "threshold", type: "uint128" },
+    ], outputs: [{ name: "id", type: "uint256" }] },
+  // Multi-option task (oracle OR staker with weight >= minProposeStake).
+  { type: "function", name: "createTask", stateMutability: "nonpayable",
+    inputs: [
+      { name: "projectKey", type: "bytes32" },
+      { name: "description", type: "string" },
+      { name: "stage", type: "uint8" },
+      { name: "options", type: "tuple[]", components: [
+        { name: "label", type: "string" },
+        { name: "description", type: "string" },
+      ] },
       { name: "votingEnd", type: "uint64" },
       { name: "threshold", type: "uint128" },
     ], outputs: [{ name: "id", type: "uint256" }] },

@@ -323,6 +323,52 @@ export function useGovernorActions() {
           params.threshold,
         ],
       }),
+    submitProjectIdea: (params: {
+      title: string;
+      description: string;
+      category: string;
+      buildTime: string;
+      complexity: number;
+      marketPotential: number;
+      votingEndUnixSec: bigint;
+      threshold: bigint;
+    }) =>
+      writeContractAsync({
+        address: a.governor,
+        abi: GOVERNOR_ABI,
+        functionName: "createProposal",
+        args: [
+          params.title,
+          params.description,
+          params.category,
+          params.buildTime,
+          params.complexity,
+          params.marketPotential,
+          params.votingEndUnixSec,
+          params.threshold,
+        ],
+      }),
+    submitTask: (params: {
+      projectId: string;
+      description: string;
+      stage: number;
+      options: { label: string; description: string }[];
+      votingEndUnixSec: bigint;
+      threshold: bigint;
+    }) =>
+      writeContractAsync({
+        address: a.governor,
+        abi: GOVERNOR_ABI,
+        functionName: "createTask",
+        args: [
+          projectKeyOf(params.projectId),
+          params.description,
+          params.stage,
+          params.options,
+          params.votingEndUnixSec,
+          params.threshold,
+        ],
+      }),
     finalizeProposal: (proposalNumericId: number) =>
       writeContractAsync({
         address: a.governor,
@@ -371,6 +417,7 @@ type OnchainProposal = {
   complexity: number;
   marketPotential: number;
   status: number;
+  submitter: `0x${string}`;
 };
 
 type OnchainTask = {
@@ -384,6 +431,7 @@ type OnchainTask = {
   optionCount: number;
   status: number;
   decidedOption: number;
+  submitter: `0x${string}`;
 };
 
 type OnchainCommunity = {
@@ -421,6 +469,7 @@ function decodeProposal(raw: unknown) {
     threshold: o.threshold,
     participants: Number(o.participants),
     status: o.status,
+    submitter: o.submitter,
   };
 }
 

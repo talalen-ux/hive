@@ -60,6 +60,41 @@ action item *is* the description).
 high spam-proofs at the cost of locking out small holders; setting it
 low is permissive but invites spam. Default at deploy: 100 HIVE.
 
+### `createProposal` and `createTask` are now community-callable
+Both AI-only entrypoints opened up:
+
+* `createProposal(...)` — submits a **project idea**. Open to the oracle
+  (AI generator) and to any wallet with `weightOf >= minProposeStake`.
+  Stakers can pitch new project ideas; off-chain compares
+  `proposals(id).submitter` to `oracle()` to distinguish AI vs community
+  provenance. Same vote rules as before.
+* `createTask(...)` — submits a **multi-option task** (e.g. naming
+  votes: "Buzz" / "Hum" / "Comb"). Same access tier and provenance
+  recording.
+
+Both functions write `msg.sender` to a new `submitter` field on the
+Proposal / Task structs. Auto-promoted tasks (from passed community
+proposals) carry the original community proposer's address as
+`submitter`, preserving the lineage.
+
+**Spam surface.** A staker holding `minProposeStake` can flood the
+governor with proposals/tasks — bounded by:
+1. **Gas cost** per submission (each createProposal writes ~5 storage
+   slots; each createTask writes 5 + 3·options).
+2. **Stake gate** (capital requirement scales with `minProposeStake`).
+3. **Voting window cap** ([24h, 7d]) — proposals churn out quickly.
+
+If spam becomes a real issue, the multisig raises `minProposeStake` via
+`setMinProposeStake`. The dapp filters out low-quorum / unfinalised
+proposals from prominent surfaces.
+
+**Provenance griefing.** A community member can submit a task with
+`projectKey == keccak256("proj-foobar")` for a project they don't own.
+The vote runs harmlessly — if no one votes, finalize REJECTS. UI clutter
+on the wrong project page is the main cost. Mitigation: the dapp filters
+ACTIVE-only proposals by default; finalised-no-quorum rows fade into a
+collapsed "history" tail (TODO).
+
 The previous lock-based audit findings (H-G1 vote-survives-unstake,
 H-G3 duplicate unstake bodies, etc.) remain mitigated. Findings tied to
 removed mechanisms (lock multipliers, forfeit, sync auto-distribution)

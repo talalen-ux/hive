@@ -81,6 +81,10 @@ contract HiveGovernor is Ownable2Step, Pausable {
         uint8 complexity;
         uint8 marketPotential;
         uint8 status;
+        // submitter: oracle address for AI-generated ideas, the staker
+        // wallet for community-submitted ones. Off-chain compares against
+        // `oracle()` to distinguish provenance.
+        address submitter;
     }
 
     struct CommunityProposal {
@@ -110,6 +114,10 @@ contract HiveGovernor is Ownable2Step, Pausable {
         uint8 optionCount;
         uint8 status;
         uint8 decidedOption;
+        // submitter: same semantics as Proposal.submitter. Auto-promoted
+        // tasks from community proposals carry the original proposer's
+        // address.
+        address submitter;
     }
 
     struct TaskOption {
@@ -177,12 +185,19 @@ contract HiveGovernor is Ownable2Step, Pausable {
     event OracleRotationProposed(address indexed pending, uint64 effectiveAt);
     event OracleRotationCancelled(address indexed pending);
     event MinProposeStakeSet(uint128 newValue);
-    event ProposalCreated(uint256 indexed id, string title, uint64 votingEnd, uint128 threshold);
+    event ProposalCreated(
+        uint256 indexed id,
+        address indexed submitter,
+        string title,
+        uint64 votingEnd,
+        uint128 threshold
+    );
     event ProposalVoted(uint256 indexed id, address indexed voter, uint8 choice, uint256 weight);
     event ProposalFinalized(uint256 indexed id, uint8 status);
     event TaskCreated(
         uint256 indexed id,
         bytes32 indexed projectKey,
+        address indexed submitter,
         uint8 stage,
         uint8 optionCount,
         uint64 votingEnd
@@ -201,6 +216,19 @@ contract HiveGovernor is Ownable2Step, Pausable {
 
     modifier onlyOracle() {
         if (msg.sender != oracle) revert NotOracle();
+        _;
+    }
+
+    /// @dev Either the oracle (AI generator) or any wallet whose staked
+    ///      weight clears `minProposeStake` may submit. This is the same
+    ///      anti-spam gate as `submitCommunityProposal`.
+    modifier onlyOracleOrStaker() {
+        if (msg.sender != oracle) {
+            uint256 w = staking.weightOf(msg.sender);
+            if (w < minProposeStake) {
+                revert InsufficientStakeToPropose(w, minProposeStake);
+            }
+        }
         _;
     }
 
@@ -257,6 +285,10 @@ contract HiveGovernor is Ownable2Step, Pausable {
 
     // ─────────────────────── Idea proposals (oracle) ───────────────────────
 
+    /// @notice Submit a project-idea proposal. Open to the oracle (AI
+    ///         generator) and to any wallet with `weightOf >= minProposeStake`
+    ///         (staker-submitted). Off-chain compares `proposals(id).submitter`
+    ///         to `oracle()` to distinguish AI vs community provenance.
     function createProposal(
         string calldata title,
         string calldata description,
@@ -266,7 +298,7 @@ contract HiveGovernor is Ownable2Step, Pausable {
         uint8 marketPotential,
         uint64 votingEnd,
         uint128 threshold
-    ) external onlyOracle whenNotPaused returns (uint256 id) {
+    ) external onlyOracleOrStaker whenNotPaused returns (uint256 id) {
         _checkWindow(votingEnd);
         if (threshold == 0) revert ThresholdRequired();
         if (complexity > 10 || marketPotential > 10) revert BadScore();
@@ -286,7 +318,8 @@ contract HiveGovernor is Ownable2Step, Pausable {
         p.votingStart = uint64(block.timestamp);
         p.votingEnd = votingEnd;
         p.threshold = threshold;
-        emit ProposalCreated(id, title, votingEnd, threshold);
+        p.submitter = msg.sender;
+        emit ProposalCreated(id, msg.sender, title, votingEnd, threshold);
     }
 
     function vote(uint256 id, uint8 choice) external whenNotPaused {
@@ -406,8 +439,9 @@ contract HiveGovernor is Ownable2Step, Pausable {
             t.optionCount = 0;
             t.status = STATUS_PASSED;
             t.decidedOption = 0;
+            t.submitter = c.submitter; // preserve community-proposal provenance
             c.becameTaskId = newTaskId;
-            emit TaskCreated(newTaskId, c.projectKey, 0, 0, uint64(block.timestamp));
+            emit TaskCreated(newTaskId, c.projectKey, c.submitter, 0, 0, uint64(block.timestamp));
             emit TaskFinalized(newTaskId, STATUS_PASSED, 0);
             emit CommunityProposalFinalized(id, STATUS_PASSED, newTaskId);
         } else {
@@ -416,8 +450,11 @@ contract HiveGovernor is Ownable2Step, Pausable {
         }
     }
 
-    // ─────────────────────── Tasks (oracle) ───────────────────────
+    // ─────────────────────── Multi-option tasks ───────────────────────
 
+    /// @notice Submit a multi-option task vote (e.g. naming options A/B/C
+    ///         for a project). Open to the oracle and to any wallet with
+    ///         `weightOf >= minProposeStake`.
     function createTask(
         bytes32 projectKey,
         string calldata description,
@@ -425,7 +462,7 @@ contract HiveGovernor is Ownable2Step, Pausable {
         OptionInput[] calldata options,
         uint64 votingEnd,
         uint128 threshold
-    ) external onlyOracle whenNotPaused returns (uint256 id) {
+    ) external onlyOracleOrStaker whenNotPaused returns (uint256 id) {
         _checkWindow(votingEnd);
         if (threshold == 0) revert ThresholdRequired();
         if (stage >= MAX_STAGES) revert BadStage();
@@ -445,6 +482,7 @@ contract HiveGovernor is Ownable2Step, Pausable {
         t.votingEnd = votingEnd;
         t.threshold = threshold;
         t.optionCount = uint8(n);
+        t.submitter = msg.sender;
 
         for (uint256 i = 0; i < n; ) {
             string calldata label = options[i].label;
@@ -467,7 +505,7 @@ contract HiveGovernor is Ownable2Step, Pausable {
             });
             unchecked { ++i; }
         }
-        emit TaskCreated(id, projectKey, stage, uint8(n), votingEnd);
+        emit TaskCreated(id, projectKey, msg.sender, stage, uint8(n), votingEnd);
     }
 
     function voteTask(uint256 id, uint8 option) external whenNotPaused {

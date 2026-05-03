@@ -8,6 +8,7 @@ import { projectKeyOf } from "@/hooks/useGovernor";
 import { PipelineProgress } from "@/components/incubator/PipelineProgress";
 import { TaskVote } from "@/components/incubator/TaskVote";
 import { SubmitProposalForm } from "@/components/incubator/SubmitProposalForm";
+import { SubmitTaskForm } from "@/components/incubator/SubmitTaskForm";
 import { CommunityProposalRow } from "@/components/incubator/CommunityProposalRow";
 import {
   STAGE_ORDER,
@@ -26,10 +27,13 @@ export default function ProjectDetail() {
   const { project: apiProject } = useProject(typeof id === "string" ? id : undefined, seed);
   const project = apiProject ?? seed;
 
-  const projectTasks = useMemo(
-    () => state.tasks.filter((t) => t.projectId === id),
-    [state.tasks, id],
-  );
+  const projectTasks = useMemo(() => {
+    if (typeof id !== "string") return [];
+    const onchainKey = projectKeyOf(id).toLowerCase();
+    return state.tasks.filter(
+      (t) => t.projectId === id || t.projectId.toLowerCase() === onchainKey,
+    );
+  }, [state.tasks, id]);
 
   // Open votes: ACTIVE A/B/C tasks. Promoted-from-proposal tasks have empty
   // option arrays and live in the proposals section instead.
@@ -176,15 +180,19 @@ export default function ProjectDetail() {
         <div className="flex items-baseline justify-between">
           <div>
             <h2 className="text-xl font-light text-honey-soft">
-              Open task votes
+              Multi-option votes
             </h2>
             <p className="mt-1 text-[12px] text-honey-soft/45">
-              Stage decisions in progress · 55% threshold per option group
+              Naming, designs, A/B/C decisions · stakers submit · 55% leader to pass
             </p>
           </div>
           <span className="rounded-full bg-honey/10 px-3 py-1 text-[10px] uppercase tracking-wider2 text-honey-soft/75">
             {openTasks.length} active
           </span>
+        </div>
+
+        <div className="mt-6">
+          <SubmitTaskForm projectId={project.id} />
         </div>
 
         {openTasks.length === 0 ? (

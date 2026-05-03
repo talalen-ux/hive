@@ -61,13 +61,35 @@ async function getNow(): Promise<number> {
 
 const KEY = (s: string) => ethers.keccak256(ethers.toUtf8Bytes(s));
 
-describe("HiveGovernor — idea proposals (oracle-only)", () => {
-  it("only oracle can create", async () => {
+describe("HiveGovernor — idea proposals (oracle or staker)", () => {
+  it("non-staker non-oracle is rejected", async () => {
     const { alice, governor } = await deployFull();
     const end = (await getNow()) + 2 * DAY;
     await expect(
-      governor.connect(alice).createProposal("T", "D", "social", "1w", 5, 5, end, PARSE("100")),
-    ).to.be.revertedWithCustomError(governor, "NotOracle");
+      governor.connect(alice).createProposal("T", "Long enough description here.", "social", "1w", 5, 5, end, PARSE("100")),
+    ).to.be.revertedWithCustomError(governor, "InsufficientStakeToPropose");
+  });
+
+  it("staker with >= minProposeStake can submit a project idea", async () => {
+    const { alice, hive, staking, governor } = await deployFull();
+    await hive.connect(alice).approve(await staking.getAddress(), PARSE("100"));
+    await staking.connect(alice).stake(PARSE("100"));
+
+    const end = (await getNow()) + 2 * DAY;
+    await governor
+      .connect(alice)
+      .createProposal("Pollen", "Permissionless yield router for L2 dust positions.", "defi", "5 weeks", 7, 8, end, PARSE("10"));
+
+    const p = await governor.proposals(1);
+    expect(p.title).to.equal("Pollen");
+    expect(p.submitter).to.equal(alice.address);
+  });
+
+  it("AI proposal records oracle as submitter", async () => {
+    const { oracle, governor } = await deployFull();
+    const end = (await getNow()) + 2 * DAY;
+    await governor.connect(oracle).createProposal("AI idea", "AI-generated description here.", "infra", "3 weeks", 5, 5, end, PARSE("10"));
+    expect((await governor.proposals(1)).submitter).to.equal(oracle.address);
   });
 
   it("vote weight = stake amount; vote-once; freeze blocks unstake", async () => {
@@ -197,6 +219,36 @@ describe("HiveGovernor — community proposals (stakers)", () => {
     await governor.finalizeCommunityProposal(1);
     expect((await governor.communityProposals(1)).status).to.equal(STATUS_REJECTED);
     expect(await governor.taskCount()).to.equal(taskCountBefore);
+  });
+});
+
+describe("HiveGovernor — multi-option tasks (oracle or staker)", () => {
+  it("non-staker non-oracle is rejected", async () => {
+    const { alice, governor } = await deployFull();
+    const end = (await getNow()) + 2 * DAY;
+    await expect(
+      governor.connect(alice).createTask(KEY("p"), "Pick a name", 0, [
+        { label: "Buzz", description: "" },
+        { label: "Hum", description: "" },
+      ], end, PARSE("10")),
+    ).to.be.revertedWithCustomError(governor, "InsufficientStakeToPropose");
+  });
+
+  it("staker can submit a naming task", async () => {
+    const { alice, hive, staking, governor } = await deployFull();
+    await hive.connect(alice).approve(await staking.getAddress(), PARSE("150"));
+    await staking.connect(alice).stake(PARSE("150"));
+
+    const end = (await getNow()) + 2 * DAY;
+    await governor.connect(alice).createTask(KEY("proj-buzz"), "Pick a name", 0, [
+      { label: "Buzz", description: "" },
+      { label: "Hum", description: "" },
+      { label: "Comb", description: "" },
+    ], end, PARSE("10"));
+
+    const t = await governor.tasks(1);
+    expect(t.optionCount).to.equal(3);
+    expect(t.submitter).to.equal(alice.address);
   });
 });
 

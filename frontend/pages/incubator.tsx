@@ -4,6 +4,7 @@ import Link from "next/link";
 import { IdeaFeed } from "@/components/incubator/IdeaFeed";
 import { ProposalRow } from "@/components/incubator/ProposalRow";
 import { SwarmTable } from "@/components/incubator/SwarmTable";
+import { SubmitProjectIdeaForm } from "@/components/incubator/SubmitProjectIdeaForm";
 import { useIncubator } from "@/hooks/useIncubator";
 
 export default function IncubatorPage() {
@@ -77,6 +78,22 @@ export default function IncubatorPage() {
           )}
         </motion.section>
       </motion.div>
+
+      <motion.section
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.55, duration: 0.6 }}
+        className="mt-16"
+      >
+        <SectionHeader
+          kicker="Submit a project idea"
+          title="Pitch the next build"
+          note="Stakers ≥ minProposeStake can submit. 24h vote · 60% YES + quorum to pass."
+        />
+        <div className="mt-4 max-w-2xl">
+          <SubmitProjectIdeaForm />
+        </div>
+      </motion.section>
 
       <motion.section
         initial={{ opacity: 0, y: 12 }}

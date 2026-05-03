@@ -32,6 +32,7 @@ export const GOVERNOR_ABI = [
       { name: "complexity", type: "uint8" },
       { name: "marketPotential", type: "uint8" },
       { name: "status", type: "uint8" },
+      { name: "submitter", type: "address" },
     ],
   },
   {
@@ -70,6 +71,7 @@ export const GOVERNOR_ABI = [
     name: "ProposalCreated",
     inputs: [
       { name: "id", type: "uint256", indexed: true },
+      { name: "submitter", type: "address", indexed: true },
       { name: "title", type: "string", indexed: false },
       { name: "votingEnd", type: "uint64", indexed: false },
       { name: "threshold", type: "uint128", indexed: false },
