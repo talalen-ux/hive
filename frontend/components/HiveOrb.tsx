@@ -2,30 +2,28 @@ import { motion, useMotionValue, useSpring, useTransform } from "framer-motion";
 import { useMemo, useState, type PointerEvent } from "react";
 
 /**
- * HiveOrb — a tilted hex dome with scattered glowing cells and a luminous
- * central core. Pure SVG + CSS perspective (no Three.js); stays SSR-safe and
- * lightweight while still feeling cinematic.
+ * HiveOrb — a tilted hex dome with scattered glowing cells. Pure SVG +
+ * CSS perspective (no Three.js); SSR-safe, lightweight, cinematic.
  *
- * Geometry: an axial-coordinate hex grid is projected to 2D and trimmed to a
- * disc, then CSS perspective tilts the whole thing into a dome. Each cell
- * picks deterministic random "lit" / phase / speed values from its (q, r)
+ * Geometry: an axial-coordinate hex grid is projected to 2D, trimmed to a
+ * disc, then CSS perspective tilts the SVG into a dome. Each cell picks
+ * deterministic random "lit" / phase / speed values from its (q, r)
  * coordinates so the dome is stable across renders but every pulse fires on
- * its own beat. The central hex is rendered as a separate untilted layer so
- * it stays flat to the camera.
+ * its own beat.
  *
- * Hover: the dome tracks the mouse with spring-smoothed parallax tilt and a
- * temporary glow boost. The central core scales up slightly on enter.
+ * Hover: spring-smoothed parallax tilt + global glow boost. Idle: a slow
+ * continuous Z-rotation drifts the surface so the eye keeps moving.
  */
 type Props = {
   /** 0..1 — scales halo glow + ambient sparkle density. */
   intensity?: number;
 };
 
-const HEX_BASE_SIZE = 12;
-const DOME_RADIUS = 218;
-const RING_COUNT = 9;
+const HEX_BASE_SIZE = 11;
+const DOME_RADIUS = 230;
+const RING_COUNT = 10;
 const VIEW = 480;
-const LIT_PROBABILITY = 0.34;
+const LIT_PROBABILITY = 0.44;
 
 type Hex = {
   q: number;
@@ -37,24 +35,22 @@ type Hex = {
   lit: boolean;
   pulseDelay: number;
   pulseDuration: number;
+  /** 0..1 — scales the lit cell's brightness so the dome has hot + warm cells. */
+  litStrength: number;
 };
 
-export function HiveOrb({ intensity = 0.7 }: Props) {
-  const i = Math.max(0.15, Math.min(1, intensity));
+export function HiveOrb({ intensity = 0.85 }: Props) {
+  const i = Math.max(0.2, Math.min(1, intensity));
   const hexes = useMemo(generateDome, []);
   const [hovered, setHovered] = useState(false);
 
-  // Mouse-tracked parallax. mouseX/Y are normalised to [-1, 1] within the
-  // container; springs smooth the motion so quick movements don't snap.
   const mouseX = useMotionValue(0);
   const mouseY = useMotionValue(0);
-  const sx = useSpring(mouseX, { stiffness: 80, damping: 16, mass: 0.4 });
-  const sy = useSpring(mouseY, { stiffness: 80, damping: 16, mass: 0.4 });
+  const sx = useSpring(mouseX, { stiffness: 90, damping: 14, mass: 0.4 });
+  const sy = useSpring(mouseY, { stiffness: 90, damping: 14, mass: 0.4 });
 
-  // Base tilt is rotateX(38deg). On hover, ±8° of additional X (looking up
-  // /down) and ±10° of Y (looking left/right) follows the cursor.
-  const rotateX = useTransform(sy, [-1, 1], [46, 30]);
-  const rotateY = useTransform(sx, [-1, 1], [-10, 10]);
+  const rotateX = useTransform(sy, [-1, 1], [50, 26]);
+  const rotateY = useTransform(sx, [-1, 1], [-14, 14]);
 
   function onPointerMove(e: PointerEvent<HTMLDivElement>) {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -69,40 +65,54 @@ export function HiveOrb({ intensity = 0.7 }: Props) {
     setHovered(false);
   }
 
-  // Hover pumps the glow ~1.5× and slightly brightens lit cells. The bump is
-  // applied to halo, ground glow, sparkles, and core bloom; per-cell colour
-  // stays the same to avoid restarting every CSS pulse.
-  const hoverBoost = hovered ? 1.5 : 1;
+  const hoverBoost = hovered ? 1.85 : 1;
 
   return (
     <div
-      className="relative mx-auto aspect-square w-full max-w-[560px]"
+      className="relative mx-auto aspect-square w-full max-w-[820px]"
       onPointerMove={onPointerMove}
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={onPointerLeave}
     >
-      {/* outer halo — ambient glow under the dome */}
+      {/* outer halo — pulses harder than before, faster cadence */}
       <motion.div
         aria-hidden
         className="pointer-events-none absolute inset-0 rounded-full blur-3xl"
         animate={{
-          scale: [1, 1.06, 1],
-          opacity: [0.7, 1, 0.7],
+          scale: [1, 1.13, 1],
+          opacity: [0.55, 1, 0.55],
         }}
-        transition={{ duration: 5, ease: "easeInOut", repeat: Infinity }}
+        transition={{ duration: 3.2, ease: "easeInOut", repeat: Infinity }}
         style={{
-          background: `radial-gradient(circle at 50% 60%, rgba(255,215,106,${0.42 * i * hoverBoost}), transparent 60%)`,
+          background: `radial-gradient(circle at 50% 60%, rgba(255,215,106,${0.62 * i * hoverBoost}), transparent 58%)`,
+        }}
+      />
+
+      {/* secondary halo — counter-pulses for interference */}
+      <motion.div
+        aria-hidden
+        className="pointer-events-none absolute inset-[-6%] rounded-full blur-3xl"
+        animate={{
+          scale: [1.05, 0.96, 1.05],
+          opacity: [0.45, 0.85, 0.45],
+        }}
+        transition={{ duration: 4.6, ease: "easeInOut", repeat: Infinity }}
+        style={{
+          background: `radial-gradient(circle at 50% 50%, rgba(255,200,90,${0.32 * i * hoverBoost}), transparent 65%)`,
         }}
       />
 
       {/* ground glow — pooled light beneath the dome */}
       <motion.div
         aria-hidden
-        className="pointer-events-none absolute inset-x-[18%] bottom-[-2%] h-[14%] rounded-[50%] blur-2xl"
-        animate={{ opacity: hovered ? 1 : 0.85 }}
-        transition={{ duration: 0.5, ease: "easeOut" }}
+        className="pointer-events-none absolute inset-x-[14%] bottom-[-3%] h-[16%] rounded-[50%] blur-2xl"
+        animate={{
+          scale: [1, 1.08, 1],
+          opacity: [0.7, 1, 0.7],
+        }}
+        transition={{ duration: 3.8, ease: "easeInOut", repeat: Infinity }}
         style={{
-          background: `radial-gradient(ellipse at center, rgba(255,200,90,${0.55 * i * hoverBoost}), transparent 70%)`,
+          background: `radial-gradient(ellipse at center, rgba(255,200,90,${0.7 * i * hoverBoost}), transparent 70%)`,
         }}
       />
 
@@ -120,47 +130,50 @@ export function HiveOrb({ intensity = 0.7 }: Props) {
             willChange: "transform",
           }}
         >
-          <defs>
-            <radialGradient id="hexLit" cx="50%" cy="40%" r="65%">
-              <stop offset="0%" stopColor="#FFE9A8" stopOpacity="1" />
-              <stop offset="55%" stopColor="#F5B942" stopOpacity="0.95" />
-              <stop offset="100%" stopColor="#7A4C0F" stopOpacity="0.4" />
-            </radialGradient>
-            <linearGradient id="hexDim" x1="50%" y1="0%" x2="50%" y2="100%">
-              <stop offset="0%" stopColor="rgba(245,185,66,0.10)" />
-              <stop offset="100%" stopColor="rgba(60,40,20,0.05)" />
-            </linearGradient>
-          </defs>
+          {/* slow continuous Z-rotation — gives the surface life on idle. */}
+          <motion.g
+            animate={{ rotate: 360 }}
+            transition={{ duration: 80, ease: "linear", repeat: Infinity }}
+          >
+            <defs>
+              <radialGradient id="hexLit" cx="50%" cy="40%" r="65%">
+                <stop offset="0%" stopColor="#FFF1B8" stopOpacity="1" />
+                <stop offset="55%" stopColor="#F5B942" stopOpacity="1" />
+                <stop offset="100%" stopColor="#7A4C0F" stopOpacity="0.5" />
+              </radialGradient>
+              <linearGradient id="hexDim" x1="50%" y1="0%" x2="50%" y2="100%">
+                <stop offset="0%" stopColor="rgba(245,185,66,0.12)" />
+                <stop offset="100%" stopColor="rgba(60,40,20,0.06)" />
+              </linearGradient>
+            </defs>
 
-          <circle
-            cx="0"
-            cy="0"
-            r={DOME_RADIUS + 18}
-            fill="none"
-            stroke="rgba(255,215,106,0.18)"
-            strokeDasharray="1.5 7"
-            strokeWidth="0.7"
-          />
-          <circle
-            cx="0"
-            cy="0"
-            r={DOME_RADIUS + 38}
-            fill="none"
-            stroke="rgba(255,215,106,0.07)"
-            strokeDasharray="1 12"
-            strokeWidth="0.5"
-          />
+            <circle
+              cx="0"
+              cy="0"
+              r={DOME_RADIUS + 18}
+              fill="none"
+              stroke="rgba(255,215,106,0.22)"
+              strokeDasharray="1.5 7"
+              strokeWidth="0.7"
+            />
+            <circle
+              cx="0"
+              cy="0"
+              r={DOME_RADIUS + 38}
+              fill="none"
+              stroke="rgba(255,215,106,0.12)"
+              strokeDasharray="1 12"
+              strokeWidth="0.5"
+            />
 
-          {hexes.map((h, idx) => (
-            <HexCell key={idx} hex={h} />
-          ))}
+            {hexes.map((h, idx) => (
+              <HexCell key={idx} hex={h} />
+            ))}
+          </motion.g>
         </motion.svg>
       </div>
 
-      {/* central core — rendered untilted on top so it always faces the camera */}
-      <CentralCore intensity={i} hovered={hovered} />
-
-      {/* ambient sparkles drifting around the dome edge */}
+      {/* ambient sparkles drifting around the dome edge — denser + brighter */}
       <Sparkles intensity={i} hoverBoost={hoverBoost} />
     </div>
   );
@@ -177,12 +190,16 @@ function HexCell({ hex }: { hex: Hex }) {
         <polygon
           points={points}
           fill="url(#hexDim)"
-          stroke="rgba(245,185,66,0.32)"
+          stroke="rgba(245,185,66,0.36)"
           strokeWidth="0.7"
         />
       </g>
     );
   }
+  // Stronger glow + faster animation for lit cells. Three "heat tiers" so
+  // some cells feel hotter than others — the dome reads as varied rather
+  // than a single beat.
+  const glowPx = 8 + hex.litStrength * 12;
   return (
     <g
       transform={`translate(${hex.x.toFixed(2)} ${hex.y.toFixed(2)})`}
@@ -191,64 +208,14 @@ function HexCell({ hex }: { hex: Hex }) {
       <polygon
         points={points}
         fill="url(#hexLit)"
-        stroke="rgba(255,215,106,0.7)"
-        strokeWidth="0.7"
+        stroke="rgba(255,225,140,0.85)"
+        strokeWidth="0.8"
         style={{
           animation: `hexPulse ${hex.pulseDuration.toFixed(2)}s ease-in-out ${hex.pulseDelay.toFixed(2)}s infinite`,
+          filter: `drop-shadow(0 0 ${glowPx.toFixed(1)}px rgba(255, 215, 106, ${0.7 + hex.litStrength * 0.3}))`,
         }}
       />
     </g>
-  );
-}
-
-function CentralCore({
-  intensity,
-  hovered,
-}: {
-  intensity: number;
-  hovered: boolean;
-}) {
-  return (
-    <motion.div
-      className="pointer-events-none absolute left-1/2 top-1/2 h-[22%] w-[22%] -translate-x-1/2 -translate-y-1/2"
-      animate={{ scale: hovered ? 1.08 : 1 }}
-      transition={{ type: "spring", stiffness: 220, damping: 18 }}
-    >
-      {/* backlight bloom */}
-      <motion.div
-        aria-hidden
-        className="absolute inset-[-60%] rounded-full blur-2xl"
-        animate={{ opacity: hovered ? 1 : 0.85 }}
-        transition={{ duration: 0.5, ease: "easeOut" }}
-        style={{
-          background: `radial-gradient(circle, rgba(255,220,120,${0.7 * intensity}), transparent 65%)`,
-        }}
-      />
-
-      <motion.div
-        animate={{ scale: [1, 1.04, 1] }}
-        transition={{ duration: 4, ease: "easeInOut", repeat: Infinity }}
-        className="relative h-full w-full"
-      >
-        <span className="hex-clip absolute inset-0 bg-gradient-to-br from-honey-glow via-honey to-honey-dark shadow-honeyStrong" />
-        <span className="hex-clip absolute inset-[6%] bg-gradient-to-br from-honey-deep to-ink" />
-        <span
-          className="hex-clip absolute inset-[14%] dome-core-pulse"
-          style={{
-            background:
-              "radial-gradient(circle at 50% 40%, #FFE9A8 0%, #F5B942 40%, #C89B3C 75%, #1A1208 100%)",
-          }}
-        />
-        <span
-          className="hex-clip absolute inset-[36%]"
-          style={{
-            background:
-              "radial-gradient(circle, #FFF1B8 0%, #FFD76A 60%, #F5B942 100%)",
-            filter: "drop-shadow(0 0 12px rgba(255,215,106,1))",
-          }}
-        />
-      </motion.div>
-    </motion.div>
   );
 }
 
@@ -267,19 +234,21 @@ function Sparkles({
       delay: number;
       duration: number;
     }> = [];
-    const count = 26;
+    const count = 42;
     for (let n = 0; n < count; n++) {
       const r = (k: number) => ((Math.sin(n * 73 + k * 31) + 1) / 2);
       const angle = (n / count) * Math.PI * 2 + r(1) * 0.6;
-      const radius = 0.45 + r(2) * 0.08;
+      // two rings — inner edge of the dome + a wider halo
+      const ringFar = n % 2 === 0;
+      const radius = ringFar ? 0.46 + r(2) * 0.06 : 0.52 + r(2) * 0.08;
       const left = 50 + Math.cos(angle) * radius * 100;
       const top = 50 + Math.sin(angle) * radius * 80;
       out.push({
         left: `${left.toFixed(2)}%`,
         top: `${top.toFixed(2)}%`,
-        size: 1 + r(3) * 2.4,
-        delay: r(4) * 6,
-        duration: 4 + r(5) * 4,
+        size: 1.2 + r(3) * 2.6,
+        delay: r(4) * 5,
+        duration: 2.4 + r(5) * 3.2,
       });
     }
     return out;
@@ -297,9 +266,9 @@ function Sparkles({
             top: s.top,
             width: s.size,
             height: s.size,
-            opacity: 0.6 * intensity * hoverBoost,
+            opacity: 0.75 * intensity * hoverBoost,
             animation: `hexPulse ${s.duration.toFixed(2)}s ease-in-out ${s.delay.toFixed(2)}s infinite`,
-            boxShadow: "0 0 10px rgba(255, 215, 106, 0.95)",
+            boxShadow: "0 0 14px rgba(255, 215, 106, 1)",
           }}
         />
       ))}
@@ -330,22 +299,25 @@ function generateDome(): Hex[] {
       const y = HEX_BASE_SIZE * Math.sqrt(3) * (r + q / 2);
       const dist = Math.sqrt(x * x + y * y);
       if (dist > DOME_RADIUS) continue;
-      if (q === 0 && r === 0) continue;
+      // Center cell is now part of the grid (no separate core layer).
 
       const t = dist / DOME_RADIUS;
       const sphereY = Math.cos((t * Math.PI) / 2);
 
-      const lit = pseudoRandom(q, r, 7) < LIT_PROBABILITY;
+      const litRand = pseudoRandom(q, r, 7);
+      const lit = litRand < LIT_PROBABILITY;
       out.push({
         q,
         r,
         x,
         y,
         size: HEX_BASE_SIZE * (0.78 + sphereY * 0.22),
-        opacity: 0.45 + sphereY * 0.55,
+        opacity: 0.5 + sphereY * 0.5,
         lit,
-        pulseDelay: pseudoRandom(q, r, 23) * 5,
-        pulseDuration: 2.6 + pseudoRandom(q, r, 29) * 2.6,
+        litStrength: pseudoRandom(q, r, 17),
+        // Faster pulse cadence than before for a more alive feel.
+        pulseDelay: pseudoRandom(q, r, 23) * 4,
+        pulseDuration: 1.8 + pseudoRandom(q, r, 29) * 2.0,
       });
     }
   }

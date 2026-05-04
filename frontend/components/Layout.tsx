@@ -4,7 +4,6 @@ import type { ReactNode } from "react";
 import { HoneycombBackground } from "./HoneycombBackground";
 import { PollenParticles } from "./PollenParticles";
 import { Nav } from "./Nav";
-import { PreviewBanner } from "./PreviewBanner";
 
 export function Layout({ children }: { children: ReactNode }) {
   const { pathname } = useRouter();
@@ -13,7 +12,6 @@ export function Layout({ children }: { children: ReactNode }) {
       <HoneycombBackground />
       <PollenParticles />
       <Nav />
-      <PreviewBanner />
       <AnimatePresence mode="wait">
         <motion.main
           key={pathname}
